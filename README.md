@@ -295,8 +295,8 @@ If you pre-split the input file things will go faster:
 To SEARCH a database:
 ```
  pharmitserver dbsearch -dbdir DB -in query.json
- pharmitserver dbsearch -dbdir DB -in query.sdf
- pharmitserver dbsearch -dbdir DB -in query.ph4
+ pharmitserver dbsearch -dbdir DB -in query.sdf -extra-info -out hits.sdf
+ pharmitserver dbsearch -dbdir DB -in query.ph4 -extra-info -out hits_info.txt
 ```
 When setting up a SERVER you create separate directories for each database to search:
 ```
