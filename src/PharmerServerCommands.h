@@ -561,7 +561,7 @@ public:
 			string filedata = cgiGetString(CGI, "ligand");
 			string filename = cgiGetString(CGI, "ligandname");
 			OBFormat* format = OBConversion::FormatFromExt(filename.c_str());
-			string ext = filesystem::extension(filename);
+			string ext = filesystem::path(filename).extension().string();
 			if (parsers.count(ext))
 			{
 				//a pharmacophore query format
@@ -848,7 +848,7 @@ public:
 //start a smina minimization using the current receptor and query results
 class StartSmina: public SminaCommand
 {
-	boost::asio::io_service my_io_service;
+	boost::asio::io_context my_io_service;
 	boost::filesystem::path logdirpath;
 
 public:

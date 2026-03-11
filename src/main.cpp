@@ -190,7 +190,7 @@ static void handle_pharma_cmd(const Pharmas& pharmas)
 				cerr << "Error opening output file " << outputFiles[i] << "\n";
 				exit(-1);
 			}
-			string ext = filesystem::extension(outputFiles[i]);
+			string ext = filesystem::path(outputFiles[i]).extension().string();
 			if (ext == ".txt" || ext == "")
 				outfn = pharmaTxtOutput;
 			else if (ext == ".json")
@@ -205,28 +205,29 @@ static void handle_pharma_cmd(const Pharmas& pharmas)
 		}
 
 		//special case - convert  query to points
-		if (filesystem::extension(fname) == ".json"
-				|| filesystem::extension(fname) == ".ph4"
-				|| filesystem::extension(fname) == ".query"
-				|| filesystem::extension(fname) == ".txt"
-				|| filesystem::extension(fname) == ".pml")
+		filesystem::path p(fname);
+		if (p.extension() == ".json"
+				|| p.extension() == ".ph4"
+				|| p.extension() == ".query"
+				|| p.extension() == ".txt"
+				|| p.extension() == ".pml")
 		{
 			ifstream in(fname.c_str());
 			vector<PharmaPoint> points;
 			ShapeConstraints excluder;
 
-			if (filesystem::extension(fname) == ".json"
-					|| filesystem::extension(fname) == ".query")
+			if (p.extension() == ".json"
+					|| p.extension() == ".query")
 			{
 				JSonQueryParser parser;
 				parser.parse(pharmas, in, points, excluder);
 			}
-			else if (filesystem::extension(fname) == ".ph4")
+			else if (p.extension() == ".ph4")
 			{
 				PH4Parser parser;
 				parser.parse(pharmas, in, points, excluder);
 			}
-			else if (filesystem::extension(fname) == ".pml")
+			else if (p.extension() == ".pml")
 			{
 				PMLParser parser;
 				parser.parse(pharmas, in, points, excluder);
@@ -475,7 +476,7 @@ static void handle_phogrify_cmd(const Pharmas& pharmas)
 		}
 
 		string outname = outputFiles[i];
-		string oext = boost::filesystem::extension(outname);
+		string oext = boost::filesystem::path(outname).extension().string();
 		ofstream outf;
 
 		outf.open(outname.c_str());
@@ -992,7 +993,7 @@ static void handle_dbsearch_cmd()
 	for (unsigned i = 0, n = inputFiles.size(); i < n; i++)
 	{
 
-		if (!PharmerQuery::validFormat(filesystem::extension(inputFiles[i])))
+		if (!PharmerQuery::validFormat(filesystem::path(inputFiles[i]).extension().string()))
 		{
 			cerr << "Invalid extension for query file: " << inputFiles[i]
 					<< "\n";
@@ -1007,7 +1008,7 @@ static void handle_dbsearch_cmd()
 		}
 
 		PharmerQuery query(databases.stripes, qfile,
-				filesystem::extension(inputFiles[i]), params,
+				filesystem::path(inputFiles[i]).extension().string(), params,
 				NThreads * databases.stripes.size());
 
 		string err;
@@ -1030,7 +1031,8 @@ static void handle_dbsearch_cmd()
 		if (outputFiles.size() > 0)
 		{
 			string outname = outputFiles[i];
-			string oext = filesystem::extension(outname);
+			filesystem::path outpath(outname);
+			string oext = outpath.extension().string();
 			ofstream out;
 
 			if (oext != ".sdf" && oext != ".txt" && oext != "" && oext != ".gz")

@@ -79,4 +79,50 @@ public:
 	}
 };
 
+class TimedSpinLock
+{
+	SpinMutex& mutex;
+	bool holdsLock;
+
+public:
+	// Try to acquire mutex within timeout (in milliseconds)
+	// Returns true if lock was acquired, false if timeout occurred
+	static bool acquireWithTimeout(SpinMutex& m, unsigned int timeoutMs)
+	{
+		auto start = std::chrono::high_resolution_clock::now();
+		while(!__sync_bool_compare_and_swap(&m.val, SpinMutexUnlocked, SpinMutexLocked))
+		{
+			auto elapsed = std::chrono::high_resolution_clock::now() - start;
+			if(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() >= timeoutMs)
+				return false;
+		}
+		assert(m.val == SpinMutexLocked);
+		return true;
+	}
+
+	static void release(SpinMutex& m)
+	{
+		assert(m.val == SpinMutexLocked);
+		m.val = SpinMutexUnlocked;
+	}
+
+	bool acquire(unsigned int timeoutMs) 
+	{ 
+		holdsLock = acquireWithTimeout(mutex, timeoutMs);
+		return holdsLock;
+	}
+
+	void release() { if(holdsLock) release(mutex); holdsLock = false; }
+
+	// Constructor DOES NOT acquire the lock. Call acquire() method to attempt to acquire it.
+	TimedSpinLock(SpinMutex& m): mutex(m), holdsLock(false)
+	{
+	}
+
+	virtual ~TimedSpinLock()
+	{
+		if(holdsLock)
+			release();
+	}
+};
 #endif /* PHARMITSERVER_SPINLOCK_H_ */

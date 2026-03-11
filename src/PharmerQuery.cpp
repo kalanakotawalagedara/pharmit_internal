@@ -575,7 +575,11 @@ void PharmerQuery::reduceResults()
 bool PharmerQuery::loadResults()
 {
 	access();
-	SpinLock lock(mutex);
+	TimedSpinLock lock(mutex);
+	if(!lock.acquire(1000)) //wait up to 1 second to acquire lock
+	{
+		return false;
+	}
 	checkThreads();
 	bool moretoread = !threadsDone();
 	unsigned newcnt = 0; //number added to results
@@ -614,7 +618,11 @@ bool PharmerQuery::getResults(const DataParameters& dp,
 	bool notdone = loadResults();
 	out.clear();
 
-	SpinLock lock(mutex);
+	TimedSpinLock lock(mutex);
+	if(!lock.acquire(1000)) //wait up to 1 second to acquire lock
+	{
+		return false;
+	}
 	if (dp.num > 0)
 		out.reserve(dp.num);
 	else

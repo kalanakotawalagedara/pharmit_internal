@@ -383,13 +383,14 @@ static void dumpTree(MappableOctTree *tree, ostream& out)
 	}
 	if (out)
 	{
-		if (boost::filesystem::extension(Output.c_str()) == ".raw")
+		boost::filesystem::path outpath(Output.c_str());
+		if (outpath.extension() == ".raw")
 			tree->dumpRawGrid(out, Resolution);
-		if (boost::filesystem::extension(Output.c_str()) == ".map")
+		if (outpath.extension() == ".map")
 			tree->dumpAD4Grid(out, Resolution);
-		else if (boost::filesystem::extension(Output.c_str()) == ".mira")
+		else if (outpath.extension() == ".mira")
 			tree->dumpMiraGrid(out, Resolution);
-		else if (boost::filesystem::extension(Output.c_str()) == ".csv")
+		else if (outpath.extension() == ".csv")
 			tree->dumpSproxelGrid(out, Resolution, SproxelColor);
 		else
 			tree->dumpGrid(out, Resolution);
