@@ -1,0 +1,242 @@
+name: Generate Interaction Pharmacophores
+
+on:
+  workflow_dispatch:
+    inputs:
+      csv_file:
+        description: 'CSV file path (relative to repository root)'
+        required: true
+        default: 'Input/pdb_ligands.csv'
+      batch_size:
+        description: 'Batch size per job (leave empty to process all)'
+        required: false
+        default: ''
+      num_batches:
+        description: 'Number of parallel batches (1-20, empty for single job)'
+        required: false
+        default: ''
+
+jobs:
+  setup:
+    name: Setup Job Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      total_entries: ${{ steps.count.outputs.total }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Count CSV entries
+        id: count
+        run: |
+          TOTAL=$(tail -n +2 "${{ github.event.inputs.csv_file }}" | wc -l)
+          echo "total=$TOTAL" >> $GITHUB_OUTPUT
+          echo "Total entries in CSV: $TOTAL"
+      
+      - name: Calculate batch matrix
+        id: set-matrix
+        run: |
+          TOTAL=${{ steps.count.outputs.total }}
+          NUM_BATCHES="${{ github.event.inputs.num_batches }}"
+          BATCH_SIZE="${{ github.event.inputs.batch_size }}"
+          
+          if [ -z "$NUM_BATCHES" ] || [ "$NUM_BATCHES" -eq "0" ]; then
+            # Single job mode
+            echo "matrix={\"batch\":[0]}" >> $GITHUB_OUTPUT
+            echo "Running single job for all $TOTAL entries"
+          else
+            # Calculate batch size if not provided
+            if [ -z "$BATCH_SIZE" ]; then
+              BATCH_SIZE=$(( ($TOTAL + $NUM_BATCHES - 1) / $NUM_BATCHES ))
+            fi
+            
+            # Generate batch indices
+            BATCHES="["
+            for i in $(seq 0 $(($NUM_BATCHES - 1))); do
+              START=$(($i * $BATCH_SIZE))
+              if [ $START -lt $TOTAL ]; then
+                if [ $i -gt 0 ]; then BATCHES="$BATCHES,"; fi
+                BATCHES="$BATCHES$START"
+              fi
+            done
+            BATCHES="$BATCHES]"
+            
+            echo "matrix={\"batch\":$BATCHES}" >> $GITHUB_OUTPUT
+            echo "Running $NUM_BATCHES parallel jobs with batch size $BATCH_SIZE"
+          fi
+
+  generate:
+    name: Generate Pharmacophores (Batch ${{ matrix.batch }})
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Conda environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          python-version: '3.10'
+          channels: conda-forge,defaults
+          channel-priority: strict
+      
+      - name: Cache Conda packages
+        uses: actions/cache@v3
+        with:
+          path: ~/conda_pkgs_dir
+          key: ${{ runner.os }}-conda-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-conda-
+      
+      - name: Install RDKit and dependencies
+        shell: bash -el {0}
+        run: |
+          conda install -y -c conda-forge rdkit pandas numpy requests python-dateutil
+          python --version
+          python -c "from rdkit import Chem; print('RDKit version:', Chem.rdBase.rdkitVersion)"
+      
+      - name: Determine batch parameters
+        id: batch-params
+        run: |
+          BATCH_SIZE="${{ github.event.inputs.batch_size }}"
+          if [ -z "$BATCH_SIZE" ]; then
+            echo "batch_size=" >> $GITHUB_OUTPUT
+            echo "batch_start=" >> $GITHUB_OUTPUT
+          else
+            echo "batch_size=$BATCH_SIZE" >> $GITHUB_OUTPUT
+            echo "batch_start=${{ matrix.batch }}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Run pharmacophore generation
+        shell: bash -el {0}
+        run: |
+          BATCH_SIZE="${{ steps.batch-params.outputs.batch_size }}"
+          BATCH_START="${{ steps.batch-params.outputs.batch_start }}"
+          
+          if [ -z "$BATCH_SIZE" ]; then
+            # Process all entries
+            python generate_pharmacophores.py \
+              --csv "${{ github.event.inputs.csv_file }}" \
+              --output Output
+          else
+            # Process batch
+            python generate_pharmacophores.py \
+              --csv "${{ github.event.inputs.csv_file }}" \
+              --output Output \
+              --batch-start $BATCH_START \
+              --batch-size $BATCH_SIZE
+          fi
+      
+      - name: Upload pharmacophore JSONs
+        uses: actions/upload-artifact@v4
+        with:
+          name: pharmacophores-batch-${{ matrix.batch }}
+          path: Output/*.json
+          retention-days: 30
+          if-no-files-found: warn
+      
+      - name: Upload processing log
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-batch-${{ matrix.batch }}
+          path: pharmacophore_generation.log
+          retention-days: 7
+          if-no-files-found: warn
+  
+  merge:
+    name: Merge Results
+    needs: [setup, generate]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Merge pharmacophore JSONs
+        run: |
+          mkdir -p Output
+          find artifacts/pharmacophores-batch-* -name "*.json" -type f -exec cp {} Output/ \;
+          
+          TOTAL_FILES=$(find Output -name "*.json" | wc -l)
+          echo "Total pharmacophore files generated: $TOTAL_FILES"
+          echo "Expected entries: ${{ needs.setup.outputs.total_entries }}"
+      
+      - name: Create index file
+        run: |
+          cd Output
+          python3 << 'EOF'
+          import json
+          import os
+          from pathlib import Path
+          
+          index = {
+              'total_pharmacophores': 0,
+              'generation_date': '${{ github.run_id }}',
+              'entries': []
+          }
+          
+          for json_file in sorted(Path('.').glob('*.json')):
+              if json_file.name == 'pharmacophore_index.json':
+                  continue
+              try:
+                  with open(json_file) as f:
+                      data = json.load(f)
+                  index['entries'].append({
+                      'filename': json_file.name,
+                      'pdb_id': data.get('pdb_id'),
+                      'ligand_name': data.get('ligand_name'),
+                      'num_features': data.get('num_features', 0)
+                  })
+              except Exception as e:
+                  print(f"Error reading {json_file}: {e}")
+          
+          index['total_pharmacophores'] = len(index['entries'])
+          
+          with open('pharmacophore_index.json', 'w') as f:
+              json.dump(index, f, indent=2)
+          
+          print(f"Created index with {index['total_pharmacophores']} entries")
+          EOF
+      
+      - name: Merge error logs
+        run: |
+          find artifacts/logs-batch-* -name "*.log" -type f -exec cat {} \; > combined_logs.txt
+          
+          # Extract errors
+          grep "ERROR" combined_logs.txt > error_summary.txt || echo "No errors found" > error_summary.txt
+      
+      - name: Upload merged results
+        uses: actions/upload-artifact@v4
+        with:
+          name: pharmacophores-complete
+          path: Output/
+          retention-days: 90
+      
+      - name: Upload error summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: processing-summary
+          path: |
+            error_summary.txt
+            combined_logs.txt
+          retention-days: 30
+      
+      - name: Summary
+        run: |
+          echo "## Pharmacophore Generation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total entries processed**: $(find Output -name "*.json" ! -name "*index.json" | wc -l)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Expected entries**: ${{ needs.setup.outputs.total_entries }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Error count**: $(grep -c "ERROR" error_summary.txt || echo 0)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download artifacts from the Actions tab above." >> $GITHUB_STEP_SUMMARY
