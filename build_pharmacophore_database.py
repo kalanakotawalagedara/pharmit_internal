@@ -46,6 +46,7 @@ class PharmacophoreDatabase:
             'molecules_processed': 0,
             'molecules_failed': 0,
             'molecules_skipped': 0,
+            'features_stored': 0,
             'triplets_generated': 0,
             'vectors_stored': 0,
             'errors': []
@@ -132,6 +133,24 @@ class PharmacophoreDatabase:
             )
         ''')
         
+        # Pharmacophore features (all points with coordinates for RMSD calculation)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS features (
+                feature_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mol_id INTEGER NOT NULL,
+                point_idx INTEGER NOT NULL,
+                type_id INTEGER NOT NULL,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                z REAL NOT NULL,
+                vector_x REAL,
+                vector_y REAL,
+                vector_z REAL,
+                FOREIGN KEY(mol_id) REFERENCES molecules(mol_id),
+                FOREIGN KEY(type_id) REFERENCES pharma_types(type_id)
+            )
+        ''')
+        
         logger.info("Creating indices for fast search...")
         
         # Critical indices for recursive backtracking search
@@ -143,6 +162,7 @@ class PharmacophoreDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_spatial ON triplets(centroid_x, centroid_y, centroid_z)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_mol_id ON triplets(mol_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_vector_triplet ON vectors(triplet_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_mol_features ON features(mol_id)')
         
         self.conn.commit()
         logger.info("Schema created successfully")
@@ -203,6 +223,39 @@ class PharmacophoreDatabase:
                 logger.warning(f"{pdb_id}_{ligand_name}: Already exists, skipping")
                 self.stats['molecules_skipped'] += 1
                 return True
+            
+            # Store all pharmacophore features with coordinates
+            feature_count = 0
+            for point_idx, feature in enumerate(features):
+                # Get type ID
+                if feature['type'] not in PHARMACOPHORE_TYPES:
+                    logger.warning(f"Unknown pharmacophore type '{feature['type']}', skipping feature")
+                    continue
+                
+                type_id = PHARMACOPHORE_TYPES[feature['type']]
+                
+                # Extract coordinates
+                x = feature.get('x', 0.0)
+                y = feature.get('y', 0.0)
+                z = feature.get('z', 0.0)
+                
+                # Extract vector if present
+                vector_x, vector_y, vector_z = None, None, None
+                if 'vector' in feature and feature['vector']:
+                    vec = feature['vector']
+                    vector_x = vec.get('x')
+                    vector_y = vec.get('y')
+                    vector_z = vec.get('z')
+                
+                # Insert feature
+                cursor.execute('''
+                    INSERT INTO features (
+                        mol_id, point_idx, type_id, x, y, z,
+                        vector_x, vector_y, vector_z
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (mol_id, point_idx, type_id, x, y, z, vector_x, vector_y, vector_z))
+                
+                feature_count += 1
             
             # Generate all C(N,3) triplets
             triplet_count = 0
@@ -265,8 +318,9 @@ class PharmacophoreDatabase:
             
             self.conn.commit()
             
-            logger.info(f"  Generated {triplet_count} triplets, {vector_count} vectors")
+            logger.info(f"  Stored {feature_count} features, generated {triplet_count} triplets, {vector_count} vectors")
             self.stats['molecules_processed'] += 1
+            self.stats['features_stored'] += feature_count
             self.stats['triplets_generated'] += triplet_count
             self.stats['vectors_stored'] += vector_count
             
@@ -348,6 +402,9 @@ class PharmacophoreDatabase:
         cursor.execute('SELECT COUNT(*) as count FROM molecules')
         num_mols = cursor.fetchone()['count']
         
+        cursor.execute('SELECT COUNT(*) as count FROM features')
+        num_features = cursor.fetchone()['count']
+        
         cursor.execute('SELECT COUNT(*) as count FROM triplets')
         num_triplets = cursor.fetchone()['count']
         
@@ -375,6 +432,7 @@ class PharmacophoreDatabase:
         print(f"Molecules skipped:      {self.stats['molecules_skipped']:,}")
         print(f"Total in database:      {num_mols:,}")
         print(f"-" * 70)
+        print(f"Total features:         {num_features:,}")
         print(f"Total triplets:         {num_triplets:,}")
         print(f"Total vectors:          {num_vectors:,}")
         print(f"Avg features/molecule:  {avg_features:.1f}")

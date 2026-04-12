@@ -45,6 +45,14 @@ cursor.execute("SELECT * FROM triplets LIMIT 5")
 for row in cursor.fetchall():
     print(row)
 
+# Show sample features
+print("\n" + "=" * 70)
+print("FEATURES TABLE SAMPLE (first 10)")
+print("=" * 70)
+cursor.execute("SELECT * FROM features LIMIT 10")
+for row in cursor.fetchall():
+    print(row)
+
 # Show triplet type distribution
 print("\n" + "=" * 70)
 print("TRIPLET TYPE DISTRIBUTION")
