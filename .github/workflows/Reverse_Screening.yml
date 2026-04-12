@@ -1,0 +1,286 @@
+name: Reverse Screening - Pharmacophore Search
+
+on:
+  workflow_dispatch:
+    inputs:
+      query_file:
+        description: 'Query JSON file path (relative to repository root)'
+        required: true
+        default: 'Input/Pharmit_Query_1A52_EST.json'
+      database_file:
+        description: 'Database file path (.db file)'
+        required: true
+        default: 'Database/pharmacophores.db'
+      distance_tolerance:
+        description: 'Distance tolerance in Angstroms'
+        required: false
+        default: '1.0'
+      rmsd_threshold:
+        description: 'RMSD threshold in Angstroms'
+        required: false
+        default: '2.0'
+      max_results:
+        description: 'Maximum number of results to return'
+        required: false
+        default: '20'
+      ignore_vectors:
+        description: 'Ignore H-bond vector constraints (true/false)'
+        required: false
+        default: 'false'
+
+jobs:
+  search:
+    name: Pharmacophore Database Search
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Conda environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          python-version: '3.10'
+          channels: conda-forge,defaults
+          channel-priority: strict
+      
+      - name: Cache Conda packages
+        uses: actions/cache@v3
+        with:
+          path: ~/conda_pkgs_dir
+          key: ${{ runner.os }}-conda-search-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-conda-search-
+            ${{ runner.os }}-conda-
+      
+      - name: Install dependencies
+        shell: bash -el {0}
+        run: |
+          conda install -y -c conda-forge numpy pandas python-dateutil
+          python --version
+          python -c "import numpy; print('NumPy version:', numpy.__version__)"
+          python -c "import pandas; print('Pandas version:', pandas.__version__)"
+      
+      - name: Verify required files exist
+        run: |
+          QUERY_FILE="${{ github.event.inputs.query_file }}"
+          DB_FILE="${{ github.event.inputs.database_file }}"
+          
+          echo "Checking for query file: $QUERY_FILE"
+          if [ ! -f "$QUERY_FILE" ]; then
+            echo "ERROR: Query file not found: $QUERY_FILE"
+            exit 1
+          fi
+          
+          echo "Checking for database file: $DB_FILE"
+          if [ ! -f "$DB_FILE" ]; then
+            echo "ERROR: Database file not found: $DB_FILE"
+            echo "Please run the 'Generate Interaction Pharmacophores' workflow first to create the database."
+            exit 1
+          fi
+          
+          echo "Checking for search script"
+          if [ ! -f "search_pharmacophore_database.py" ]; then
+            echo "ERROR: Search script not found: search_pharmacophore_database.py"
+            exit 1
+          fi
+          
+          echo "✓ All required files found"
+          
+          # Display file sizes
+          echo ""
+          echo "File information:"
+          ls -lh "$QUERY_FILE"
+          ls -lh "$DB_FILE"
+          
+          # Display query file summary
+          echo ""
+          echo "Query file preview:"
+          head -20 "$QUERY_FILE"
+      
+      - name: Verify database schema
+        shell: bash -el {0}
+        run: |
+          DB_FILE="${{ github.event.inputs.database_file }}"
+          
+          echo "Verifying database schema..."
+          python3 << 'PYEOF'
+          import sqlite3
+          import sys
+          
+          db_path = "${{ github.event.inputs.database_file }}"
+          
+          try:
+              conn = sqlite3.connect(db_path)
+              cursor = conn.cursor()
+              
+              # Check required tables
+              cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+              tables = [row[0] for row in cursor.fetchall()]
+              
+              required_tables = ['molecules', 'features', 'triplets', 'pharma_types']
+              missing = [t for t in required_tables if t not in tables]
+              
+              if missing:
+                  print(f"ERROR: Missing required tables: {missing}")
+                  sys.exit(1)
+              
+              print("✓ All required tables present")
+              
+              # Count entries
+              for table in required_tables:
+                  count = cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                  print(f"  {table}: {count} entries")
+              
+              conn.close()
+              
+          except Exception as e:
+              print(f"ERROR: Database verification failed: {e}")
+              sys.exit(1)
+          PYEOF
+      
+      - name: Create output directory
+        run: |
+          mkdir -p SearchResults
+          echo "Output directory created: SearchResults/"
+      
+      - name: Run pharmacophore search
+        shell: bash -el {0}
+        run: |
+          QUERY_FILE="${{ github.event.inputs.query_file }}"
+          DB_FILE="${{ github.event.inputs.database_file }}"
+          DISTANCE_TOL="${{ github.event.inputs.distance_tolerance }}"
+          RMSD_THRESH="${{ github.event.inputs.rmsd_threshold }}"
+          MAX_RESULTS="${{ github.event.inputs.max_results }}"
+          IGNORE_VECTORS="${{ github.event.inputs.ignore_vectors }}"
+          
+          # Build command
+          CMD="python search_pharmacophore_database.py"
+          CMD="$CMD --query \"$QUERY_FILE\""
+          CMD="$CMD --database \"$DB_FILE\""
+          CMD="$CMD --output SearchResults/search_results.csv"
+          CMD="$CMD --log SearchResults/search.log"
+          CMD="$CMD --distance-tolerance $DISTANCE_TOL"
+          CMD="$CMD --rmsd-threshold $RMSD_THRESH"
+          CMD="$CMD --max-results $MAX_RESULTS"
+          
+          if [ "$IGNORE_VECTORS" = "true" ]; then
+            CMD="$CMD --ignore-vectors"
+          fi
+          
+          CMD="$CMD --verbose"
+          
+          echo "Running search with command:"
+          echo "$CMD"
+          echo ""
+          
+          eval $CMD
+      
+      - name: Verify search results
+        run: |
+          if [ -f "SearchResults/search_results.csv" ]; then
+            echo "✓ Search results generated"
+            echo ""
+            echo "Results summary:"
+            wc -l SearchResults/search_results.csv
+            echo ""
+            echo "Top 5 matches:"
+            head -6 SearchResults/search_results.csv
+          else
+            echo "⚠ No results file generated (might be no matches)"
+          fi
+          
+          if [ -f "SearchResults/search.log" ]; then
+            echo ""
+            echo "Search log preview:"
+            tail -30 SearchResults/search.log
+          fi
+      
+      - name: Generate search summary
+        run: |
+          cat > SearchResults/search_summary.txt << 'EOF'
+          PHARMACOPHORE REVERSE SCREENING SUMMARY
+          ========================================
+          
+          Workflow Run: ${{ github.run_number }}
+          Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          
+          INPUT PARAMETERS:
+          -----------------
+          Query file: ${{ github.event.inputs.query_file }}
+          Database: ${{ github.event.inputs.database_file }}
+          Distance tolerance: ${{ github.event.inputs.distance_tolerance }} Å
+          RMSD threshold: ${{ github.event.inputs.rmsd_threshold }} Å
+          Max results: ${{ github.event.inputs.max_results }}
+          Ignore vectors: ${{ github.event.inputs.ignore_vectors }}
+          
+          RESULTS:
+          --------
+          EOF
+          
+          if [ -f "SearchResults/search_results.csv" ]; then
+            RESULT_COUNT=$(($(wc -l < SearchResults/search_results.csv) - 1))
+            echo "Total matches found: $RESULT_COUNT" >> SearchResults/search_summary.txt
+            echo "" >> SearchResults/search_summary.txt
+            
+            if [ $RESULT_COUNT -gt 0 ]; then
+              echo "Top 10 matches:" >> SearchResults/search_summary.txt
+              head -11 SearchResults/search_results.csv >> SearchResults/search_summary.txt
+            fi
+          else
+            echo "No matches found within specified thresholds" >> SearchResults/search_summary.txt
+          fi
+          
+          cat SearchResults/search_summary.txt
+      
+      - name: Upload search results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: search-results-${{ github.run_number }}
+          path: SearchResults/
+          retention-days: 90
+      
+      - name: Upload debug logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: search-debug-logs-${{ github.run_number }}
+          path: |
+            search_debug.log
+            SearchResults/*.log
+          retention-days: 30
+          if-no-files-found: warn
+      
+      - name: Create workflow summary
+        run: |
+          echo "## Pharmacophore Search Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Parameters" >> $GITHUB_STEP_SUMMARY
+          echo "- **Query:** \`${{ github.event.inputs.query_file }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Database:** \`${{ github.event.inputs.database_file }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Distance tolerance:** ${{ github.event.inputs.distance_tolerance }} Å" >> $GITHUB_STEP_SUMMARY
+          echo "- **RMSD threshold:** ${{ github.event.inputs.rmsd_threshold }} Å" >> $GITHUB_STEP_SUMMARY
+          echo "- **Max results:** ${{ github.event.inputs.max_results }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "SearchResults/search_results.csv" ]; then
+            RESULT_COUNT=$(($(wc -l < SearchResults/search_results.csv) - 1))
+            echo "### Results" >> $GITHUB_STEP_SUMMARY
+            echo "- **Total matches:** $RESULT_COUNT" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            if [ $RESULT_COUNT -gt 0 ]; then
+              echo "#### Top Matches" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              head -6 SearchResults/search_results.csv >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "### Results" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ No matches found within specified thresholds" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download complete results from the **Artifacts** section above." >> $GITHUB_STEP_SUMMARY
