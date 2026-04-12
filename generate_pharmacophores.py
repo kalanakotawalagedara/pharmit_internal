@@ -649,7 +649,16 @@ def main():
     logger.info(f"Total: {success_count + fail_count}")
     logger.info(f"{'='*50}\n")
     
-    return 0 if fail_count == 0 else 1
+    # Exit with success if at least one entry succeeded
+    # Only fail if ALL entries failed
+    if success_count > 0:
+        logger.info(f"✓ Generated {success_count} pharmacophores successfully")
+        if fail_count > 0:
+            logger.warning(f"⚠ {fail_count} entries failed (see error_log.json)")
+        return 0
+    else:
+        logger.error(f"✗ All {fail_count} entries failed")
+        return 1
 
 
 if __name__ == '__main__':
