@@ -1,0 +1,56 @@
+2026-04-12 05:37:21,236 - INFO - Loaded 2 entries from Input\pdb_ligands.csv
+2026-04-12 05:37:21,673 - INFO - Processing batch: rows 0 to 0
+2026-04-12 05:37:21,674 - INFO - Processing 2HYY_STI
+2026-04-12 05:37:27,383 - INFO - Extracted ligand from chain A, 3 binding site waters
+2026-04-12 05:37:27,884 - INFO - Detected 19 ligand features, 3760 receptor features
+2026-04-12 05:37:27,937 - INFO - Validated 12 interaction features (before deduplication)
+2026-04-12 05:37:27,958 - INFO - Final 8 unique interaction features
+2026-04-12 05:37:28,084 - INFO - Successfully generated Output\2HYY_STI.json
+2026-04-12 05:37:28,085 - INFO - 
+==================================================
+2026-04-12 05:37:28,086 - INFO - Processing complete!
+2026-04-12 05:37:28,087 - INFO - Success: 1
+2026-04-12 05:37:28,087 - INFO - Failed: 0
+2026-04-12 05:37:28,087 - INFO - Total: 1
+2026-04-12 05:37:28,087 - INFO - ==================================================
+
+2026-04-12 05:40:19,688 - INFO - Detected 8 ligand features, 1981 receptor features
+2026-04-12 05:40:19,708 - INFO - Validated 8 interaction features (before deduplication)
+2026-04-12 05:40:19,709 - INFO - Final 6 unique interaction features
+2026-04-12 05:40:35,071 - INFO - Loaded 2 entries from Input\pdb_ligands.csv
+2026-04-12 05:40:35,232 - INFO - Processing batch: rows 1 to 1
+2026-04-12 05:40:35,234 - INFO - Processing 1A52_EST
+2026-04-12 05:40:36,062 - INFO - Extracted ligand from chain A, 0 binding site waters
+2026-04-12 05:40:36,142 - INFO - Detected 8 ligand features, 1981 receptor features
+2026-04-12 05:40:36,145 - INFO - Validated 8 interaction features (before deduplication)
+2026-04-12 05:40:36,145 - INFO - Final 6 unique interaction features
+2026-04-12 05:40:36,172 - INFO - Successfully generated Output\1A52_EST.json
+2026-04-12 05:40:36,173 - INFO - 
+==================================================
+2026-04-12 05:40:36,174 - INFO - Processing complete!
+2026-04-12 05:40:36,174 - INFO - Success: 1
+2026-04-12 05:40:36,174 - INFO - Failed: 0
+2026-04-12 05:40:36,174 - INFO - Total: 1
+2026-04-12 05:40:36,174 - INFO - ==================================================
+
+2026-04-12 05:45:04,274 - INFO - Loaded 2 entries from Input\pdb_ligands.csv
+2026-04-12 05:45:06,182 - INFO - Processing 2HYY_STI
+2026-04-12 05:45:14,905 - INFO - Extracted ligand from chain A, 3 binding site waters
+2026-04-12 05:45:16,459 - INFO - Detected 19 ligand features, 3760 receptor features
+2026-04-12 05:45:16,495 - INFO - Validated 12 interaction features (before deduplication)
+2026-04-12 05:45:16,753 - INFO - Final 8 unique interaction features
+2026-04-12 05:45:16,966 - INFO - Successfully generated Output\2HYY_STI.json
+2026-04-12 05:45:16,969 - INFO - Processing 1A52_EST
+2026-04-12 05:45:17,653 - INFO - Extracted ligand from chain A, 0 binding site waters
+2026-04-12 05:45:17,733 - INFO - Detected 8 ligand features, 1981 receptor features
+2026-04-12 05:45:17,736 - INFO - Validated 8 interaction features (before deduplication)
+2026-04-12 05:45:17,736 - INFO - Final 6 unique interaction features
+2026-04-12 05:45:17,739 - INFO - Successfully generated Output\1A52_EST.json
+2026-04-12 05:45:17,741 - INFO - 
+==================================================
+2026-04-12 05:45:17,741 - INFO - Processing complete!
+2026-04-12 05:45:17,741 - INFO - Success: 2
+2026-04-12 05:45:17,742 - INFO - Failed: 0
+2026-04-12 05:45:17,742 - INFO - Total: 2
+2026-04-12 05:45:17,743 - INFO - ==================================================
+

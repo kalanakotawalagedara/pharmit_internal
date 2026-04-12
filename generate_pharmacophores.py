@@ -398,12 +398,59 @@ class InteractionPharmacophoreGenerator:
                 if PHARMACOPHORE_DEFINITIONS[lig_type]['has_vector'] and closest_receptor:
                     vector = self.calculate_unit_vector(lig_feature, closest_receptor)
                     validated_feature['vector'] = vector
+                    # Store interaction distance for deduplication
+                    validated_feature['interaction_distance'] = min_distance
                 
                 validated_features.append(validated_feature)
             else:
                 screened_out.append(lig_feature)
         
         return validated_features, screened_out
+    
+    def deduplicate_overlapping_features(self, features: List[Dict]) -> List[Dict]:
+        """
+        Remove duplicate features at the same position.
+        For H-bond features (HydrogenDonor/HydrogenAcceptor) at the same coordinates,
+        keep only the feature with the shortest interaction distance.
+        """
+        if not features:
+            return features
+        
+        # Group features by rounded coordinates (0.01Å precision)
+        position_groups = {}
+        for feature in features:
+            # Round to 2 decimal places
+            pos_key = (
+                round(feature['x'], 2),
+                round(feature['y'], 2),
+                round(feature['z'], 2)
+            )
+            if pos_key not in position_groups:
+                position_groups[pos_key] = []
+            position_groups[pos_key].append(feature)
+        
+        # Process each position group
+        deduplicated = []
+        for pos_key, group in position_groups.items():
+            if len(group) == 1:
+                # No duplicates at this position
+                deduplicated.append(group[0])
+            else:
+                # Check if we have H-bond duplicates
+                hbond_types = {'HydrogenDonor', 'HydrogenAcceptor'}
+                hbond_features = [f for f in group if f['type'] in hbond_types]
+                other_features = [f for f in group if f['type'] not in hbond_types]
+                
+                if len(hbond_features) > 1:
+                    # Multiple H-bond features at same position - keep the one with shortest distance
+                    best_hbond = min(hbond_features, key=lambda f: f.get('interaction_distance', float('inf')))
+                    deduplicated.append(best_hbond)
+                    deduplicated.extend(other_features)
+                else:
+                    # No H-bond duplicates, keep all features
+                    deduplicated.extend(group)
+        
+        return deduplicated
     
     def generate_pharmacophore(
         self,
@@ -440,7 +487,16 @@ class InteractionPharmacophoreGenerator:
                 ligand_features, receptor_features
             )
             
-            logger.info(f"Validated {len(validated_features)} interaction features")
+            logger.info(f"Validated {len(validated_features)} interaction features (before deduplication)")
+            
+            # Remove duplicate H-bond features at same coordinates
+            validated_features = self.deduplicate_overlapping_features(validated_features)
+            
+            logger.info(f"Final {len(validated_features)} unique interaction features")
+            
+            # Clean up temporary fields used for deduplication
+            for feature in validated_features:
+                feature.pop('interaction_distance', None)
             
             return {
                 'validated_features': validated_features,
