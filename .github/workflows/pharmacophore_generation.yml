@@ -240,3 +240,103 @@ jobs:
           echo "- **Error count**: $(grep -c "ERROR" error_summary.txt || echo 0)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Download artifacts from the Actions tab above." >> $GITHUB_STEP_SUMMARY
+  
+  build-database:
+    name: Build Pharmacophore Database
+    needs: merge
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          python-version: '3.10'
+          activate-environment: pharmit
+      
+      - name: Install dependencies
+        shell: bash -el {0}
+        run: |
+          conda install -y -c conda-forge rdkit pandas numpy python-dateutil
+          python --version
+      
+      - name: Download merged pharmacophores
+        uses: actions/download-artifact@v4
+        with:
+          name: pharmacophores-complete
+          path: Output
+      
+      - name: Verify JSON files
+        run: |
+          JSON_COUNT=$(find Output -name "*.json" ! -name "*index.json" | wc -l)
+          echo "Found $JSON_COUNT pharmacophore JSON files"
+          
+          if [ "$JSON_COUNT" -eq "0" ]; then
+            echo "ERROR: No JSON files found to build database"
+            exit 1
+          fi
+      
+      - name: Build database
+        shell: bash -el {0}
+        run: |
+          mkdir -p Database
+          
+          python build_pharmacophore_database.py \
+            --json-dir Output \
+            --output Database \
+            --log-level INFO
+          
+          # Display statistics
+          cat Database/build_log.json
+      
+      - name: Verify database
+        run: |
+          if [ ! -f "Database/pharmacophores.db" ]; then
+            echo "ERROR: Database file not created"
+            exit 1
+          fi
+          
+          # Check database size
+          DB_SIZE=$(du -h Database/pharmacophores.db | cut -f1)
+          echo "Database size: $DB_SIZE"
+          
+          # Count molecules in database
+          MOLECULE_COUNT=$(sqlite3 Database/pharmacophores.db "SELECT COUNT(*) FROM molecules;")
+          echo "Molecules in database: $MOLECULE_COUNT"
+          
+          # Count triplets
+          TRIPLET_COUNT=$(sqlite3 Database/pharmacophores.db "SELECT COUNT(*) FROM triplets;")
+          echo "Total triplets: $TRIPLET_COUNT"
+      
+      - name: Upload database artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pharmacophore-database
+          path: |
+            Database/pharmacophores.db
+            Database/molecule_index.csv
+            Database/build_log.json
+          retention-days: 90
+      
+      - name: Database Summary
+        run: |
+          echo "## Database Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Parse build log
+          MOLECULES_PROCESSED=$(jq -r '.molecules_processed' Database/build_log.json)
+          MOLECULES_FAILED=$(jq -r '.molecules_failed' Database/build_log.json)
+          TOTAL_TRIPLETS=$(jq -r '.total_triplets' Database/build_log.json)
+          TOTAL_VECTORS=$(jq -r '.total_vectors' Database/build_log.json)
+          
+          echo "- **Molecules processed**: $MOLECULES_PROCESSED" >> $GITHUB_STEP_SUMMARY
+          echo "- **Molecules failed**: $MOLECULES_FAILED" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total triplets**: $TOTAL_TRIPLETS" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total vectors**: $TOTAL_VECTORS" >> $GITHUB_STEP_SUMMARY
+          echo "- **Database size**: $(du -h Database/pharmacophores.db | cut -f1)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Database ready for download from artifacts!" >> $GITHUB_STEP_SUMMARY

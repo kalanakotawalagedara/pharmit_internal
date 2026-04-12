@@ -54,3 +54,35 @@
 2026-04-12 05:45:17,742 - INFO - Total: 2
 2026-04-12 05:45:17,743 - INFO - ==================================================
 
+2026-04-12 23:33:58,892 - INFO - Loaded 2 entries from Input/pdb_ligands.csv
+2026-04-12 23:33:58,989 - INFO - Processing 2HYY_STI
+2026-04-12 23:34:00,563 - INFO - Extracted ligand from chain A, 3 binding site waters
+2026-04-12 23:34:00,940 - INFO - Detected 19 ligand features, 3760 receptor features
+2026-04-12 23:34:00,951 - INFO - Validated 12 interaction features (before deduplication)
+2026-04-12 23:34:00,952 - INFO - Final 8 unique interaction features
+2026-04-12 23:34:00,957 - INFO - Successfully generated Output\2HYY_STI.json
+2026-04-12 23:34:00,959 - INFO - Processing 1A52_EST
+2026-04-12 23:34:02,235 - INFO - Extracted ligand from chain A, 0 binding site waters
+2026-04-12 23:34:02,308 - INFO - Detected 8 ligand features, 1981 receptor features
+2026-04-12 23:34:02,311 - INFO - Validated 8 interaction features (before deduplication)
+2026-04-12 23:34:02,311 - INFO - Final 6 unique interaction features
+2026-04-12 23:34:02,314 - INFO - Successfully generated Output\1A52_EST.json
+2026-04-12 23:34:02,315 - INFO - 
+==================================================
+2026-04-12 23:34:02,315 - INFO - Processing complete!
+2026-04-12 23:34:02,315 - INFO - Success: 2
+2026-04-12 23:34:02,316 - INFO - Failed: 0
+2026-04-12 23:34:02,316 - INFO - Total: 2
+2026-04-12 23:34:02,316 - INFO - ==================================================
+
+2026-04-12 23:35:11,167 - INFO - Loaded 2 entries from Input/pdb_ligands.csv
+2026-04-12 23:35:11,168 - INFO - Skipping 2HYY_STI (already processed)
+2026-04-12 23:35:11,169 - INFO - Skipping 1A52_EST (already processed)
+2026-04-12 23:35:11,169 - INFO - 
+==================================================
+2026-04-12 23:35:11,169 - INFO - Processing complete!
+2026-04-12 23:35:11,169 - INFO - Success: 2
+2026-04-12 23:35:11,169 - INFO - Failed: 0
+2026-04-12 23:35:11,170 - INFO - Total: 2
+2026-04-12 23:35:11,170 - INFO - ==================================================
+
