@@ -36,8 +36,12 @@ PHARMACOPHORE_TYPES = {
 class PharmacophoreDatabase:
     """
     Build searchable pharmacophore database with triangle decomposition
-    Implements SQL-based approximation of Pharmit's KDB-tree indexing
+    Implements R*Tree spatial indexing for production-scale target fishing
+    
+    Schema Version: 2 (includes R*Tree virtual table)
     """
+    
+    SCHEMA_VERSION = 2
     
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -48,6 +52,7 @@ class PharmacophoreDatabase:
             'molecules_skipped': 0,
             'features_stored': 0,
             'triplets_generated': 0,
+            'rtree_entries': 0,
             'vectors_stored': 0,
             'errors': []
         }
@@ -59,13 +64,28 @@ class PharmacophoreDatabase:
         logger.info(f"Connected to database: {self.db_path}")
     
     def create_schema(self):
-        """Create database schema with indices for fast search"""
+        """Create database schema v2 with R*Tree spatial indexing"""
         if not self.conn:
             raise RuntimeError("Database not connected")
         
         cursor = self.conn.cursor()
         
-        logger.info("Creating database schema...")
+        logger.info("Creating database schema v2 with R*Tree spatial indexing...")
+        
+        # Schema versioning for future migrations
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                description TEXT NOT NULL
+            )
+        ''')
+        
+        # Record schema version
+        cursor.execute('''
+            INSERT OR IGNORE INTO schema_version (version, description)
+            VALUES (?, ?)
+        ''', (self.SCHEMA_VERSION, 'R*Tree spatial indexing for production scale'))
         
         # Pharmacophore type definitions
         cursor.execute('''
@@ -151,21 +171,36 @@ class PharmacophoreDatabase:
             )
         ''')
         
-        logger.info("Creating indices for fast search...")
+        # R*Tree spatial index for triplet distance matching
+        logger.info("Creating R*Tree spatial index...")
+        cursor.execute('''
+            CREATE VIRTUAL TABLE IF NOT EXISTS triplet_rtree 
+            USING rtree(
+                triplet_id,              -- References triplets.triplet_id
+                dist12_min, dist12_max,  -- Distance 1-2 bounding box
+                dist23_min, dist23_max,  -- Distance 2-3 bounding box
+                dist31_min, dist31_max   -- Distance 3-1 bounding box
+            )
+        ''')
+        logger.info("✓ R*Tree spatial index created")
         
-        # Critical indices for recursive backtracking search
+        logger.info("Creating B-tree indices for fast search...")
+        
+        # Critical indices for type filtering and backtracking
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_triplet_types ON triplets(type1_id, type2_id, type3_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_dist12 ON triplets(dist12)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_dist23 ON triplets(dist23)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_dist31 ON triplets(dist31)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_mol_lookup ON molecules(pdb_id, ligand_name)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_spatial ON triplets(centroid_x, centroid_y, centroid_z)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_mol_id ON triplets(mol_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_vector_triplet ON vectors(triplet_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_mol_features ON features(mol_id)')
         
+        # Note: Distance indices now handled by R*Tree spatial index
+        # Legacy indices kept for compatibility but R*Tree will be preferred
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_dist12 ON triplets(dist12)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_dist23 ON triplets(dist23)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_dist31 ON triplets(dist31)')
+        
         self.conn.commit()
-        logger.info("Schema created successfully")
+        logger.info("✓ Schema v2 created successfully with R*Tree")
     
     def calculate_distance(self, p1: Dict, p2: Dict) -> float:
         """Calculate Euclidean distance between two points"""
@@ -306,6 +341,23 @@ class PharmacophoreDatabase:
                 triplet_id = cursor.lastrowid
                 triplet_count += 1
                 
+                # Insert into R*Tree spatial index
+                # For exact distance values, min=max (enables precise range queries)
+                cursor.execute('''
+                    INSERT INTO triplet_rtree (
+                        triplet_id,
+                        dist12_min, dist12_max,
+                        dist23_min, dist23_max,
+                        dist31_min, dist31_max
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    triplet_id,
+                    dist12, dist12,
+                    dist23, dist23,
+                    dist31, dist31
+                ))
+                self.stats['rtree_entries'] += 1
+                
                 # Store H-bond vectors
                 for idx, point in enumerate([p1, p2, p3]):
                     if 'vector' in point and point['vector']:
@@ -352,7 +404,9 @@ class PharmacophoreDatabase:
             return False
     
     def build_from_directory(self, json_dir: Path):
-        """Build database from directory of JSON files"""
+        """Build database from directory of JSON files with progress tracking"""
+        import time
+        
         json_files = sorted(json_dir.glob('*.json'))
         
         if not json_files:
@@ -362,14 +416,33 @@ class PharmacophoreDatabase:
         logger.info(f"Found {len(json_files)} JSON files")
         logger.info("="*70)
         
-        for i, json_file in enumerate(json_files, 1):
-            if i % 100 == 0:
-                logger.info(f"Progress: {i}/{len(json_files)} files processed")
-            
-            self.add_molecule(json_file)
+        start_time = time.time()
+        batch_start = start_time
         
+        for i, json_file in enumerate(json_files, 1):
+            self.add_molecule(json_file)
+            
+            # Log progress every 100 files
+            if i % 100 == 0:
+                batch_time = time.time() - batch_start
+                total_time = time.time() - start_time
+                rate = i / total_time if total_time > 0 else 0
+                eta_seconds = (len(json_files) - i) / rate if rate > 0 else 0
+                
+                logger.info(
+                    f"Progress: {i}/{len(json_files)} "
+                    f"({i/len(json_files)*100:.1f}%) "
+                    f"Rate: {rate:.1f} files/s "
+                    f"ETA: {eta_seconds/60:.1f} min"
+                )
+                batch_start = time.time()
+        
+        total_time = time.time() - start_time
         logger.info("="*70)
-        logger.info("Database build complete!")
+        logger.info(
+            f"Database build complete in {total_time:.1f}s "
+            f"({len(json_files)/total_time:.2f} files/s)"
+        )
     
     def export_molecule_index(self, output_path: Path):
         """Export molecule index as CSV for quick PDB lookup"""
@@ -424,8 +497,16 @@ class PharmacophoreDatabase:
         ''')
         top_triplet_types = cursor.fetchall()
         
+        # Get R*Tree entry count
+        cursor.execute('SELECT COUNT(*) as count FROM triplet_rtree')
+        num_rtree = cursor.fetchone()['count']
+        
+        # Database file size
+        import os
+        db_size_mb = os.path.getsize(self.db_path) / (1024*1024) if os.path.exists(self.db_path) else 0
+        
         print("\n" + "="*70)
-        print("DATABASE STATISTICS")
+        print("DATABASE STATISTICS (Schema v2 with R*Tree)")
         print("="*70)
         print(f"Molecules processed:    {self.stats['molecules_processed']:,}")
         print(f"Molecules failed:       {self.stats['molecules_failed']:,}")
@@ -434,9 +515,12 @@ class PharmacophoreDatabase:
         print(f"-" * 70)
         print(f"Total features:         {num_features:,}")
         print(f"Total triplets:         {num_triplets:,}")
+        print(f"R*Tree entries:         {num_rtree:,}")
         print(f"Total vectors:          {num_vectors:,}")
         print(f"Avg features/molecule:  {avg_features:.1f}")
         print(f"Avg triplets/molecule:  {num_triplets/num_mols if num_mols > 0 else 0:.1f}")
+        print(f"-" * 70)
+        print(f"Database file size:     {db_size_mb:.2f} MB")
         print(f"-" * 70)
         
         if top_triplet_types:
@@ -449,6 +533,67 @@ class PharmacophoreDatabase:
                 print(f"  ({t1}, {t2}, {t3}): {row['count']:,}")
         
         print("="*70 + "\n")
+    
+    def validate_rtree(self) -> bool:
+        """Validate R*Tree spatial index integrity"""
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+        
+        logger.info("Validating R*Tree spatial index...")
+        cursor = self.conn.cursor()
+        
+        try:
+            # Check entry counts match
+            triplet_count = cursor.execute('SELECT COUNT(*) as cnt FROM triplets').fetchone()['cnt']
+            rtree_count = cursor.execute('SELECT COUNT(*) as cnt FROM triplet_rtree').fetchone()['cnt']
+            
+            if triplet_count != rtree_count:
+                logger.error(
+                    f"✗ R*Tree validation FAILED: "
+                    f"{triplet_count} triplets but {rtree_count} R*Tree entries"
+                )
+                return False
+            
+            logger.info(f"✓ R*Tree entry count matches: {rtree_count:,} entries")
+            
+            # Test a spatial range query
+            test_result = cursor.execute('''
+                SELECT COUNT(*) as cnt
+                FROM triplets t
+                INNER JOIN triplet_rtree r ON t.triplet_id = r.triplet_id
+                WHERE 
+                    r.dist12_min <= 10.0 AND r.dist12_max >= 5.0 AND
+                    r.dist23_min <= 10.0 AND r.dist23_max >= 5.0
+            ''').fetchone()['cnt']
+            
+            logger.info(f"✓ Test spatial query successful: {test_result:,} results")
+            
+            # Test a specific triplet lookup
+            sample = cursor.execute('''
+                SELECT t.triplet_id, t.dist12, t.dist23, t.dist31
+                FROM triplets t
+                LIMIT 1
+            ''').fetchone()
+            
+            if sample:
+                lookup = cursor.execute('''
+                    SELECT COUNT(*) as cnt
+                    FROM triplet_rtree
+                    WHERE triplet_id = ?
+                ''', (sample['triplet_id'],)).fetchone()['cnt']
+                
+                if lookup == 1:
+                    logger.info(f"✓ Sample triplet lookup successful (ID: {sample['triplet_id']})")
+                else:
+                    logger.error(f"✗ Sample triplet missing in R*Tree (ID: {sample['triplet_id']})")
+                    return False
+            
+            logger.info("✓ R*Tree validation PASSED")
+            return True
+            
+        except Exception as e:
+            logger.error(f"✗ R*Tree validation error: {e}")
+            return False
     
     def save_build_log(self, log_path: Path):
         """Save build log with statistics and errors"""
@@ -546,6 +691,13 @@ Examples:
         db.create_schema()
         db.build_from_directory(json_dir)
         db.print_statistics()
+        
+        # Validate R*Tree integrity
+        logger.info("")
+        if not db.validate_rtree():
+            logger.warning("⚠ R*Tree validation failed - database may have issues")
+            logger.warning("  Search may still work but performance could be degraded")
+        
         db.export_molecule_index(index_path)
         db.save_build_log(log_path)
         
@@ -558,10 +710,13 @@ Examples:
     finally:
         db.close()
     
+    logger.info("\n" + "="*70)
     logger.info("✓ Database build complete!")
+    logger.info("="*70)
     logger.info(f"  Database: {db_path}")
     logger.info(f"  Index:    {index_path}")
     logger.info(f"  Log:      {log_path}")
+    logger.info("="*70)
     
     return 0
 

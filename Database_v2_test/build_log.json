@@ -1,0 +1,22 @@
+{
+  "build_date": "2026-04-14T17:46:28.708Z",
+  "database_path": "Database_v2_test\\pharmacophores.db",
+  "statistics": {
+    "molecules_processed": 0,
+    "molecules_failed": 0,
+    "molecules_skipped": 0,
+    "features_stored": 0,
+    "triplets_generated": 0,
+    "rtree_entries": 0,
+    "vectors_stored": 0,
+    "errors": []
+  },
+  "pharmacophore_types": {
+    "Aromatic": 0,
+    "HydrogenDonor": 1,
+    "HydrogenAcceptor": 2,
+    "PositiveIon": 3,
+    "NegativeIon": 4,
+    "Hydrophobic": 5
+  }
+}
