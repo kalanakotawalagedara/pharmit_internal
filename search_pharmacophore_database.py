@@ -302,12 +302,16 @@ class CorrespondenceFinder:
         self.check_vectors = check_vectors
         self.results = []
         
+        # Track unique correspondences to avoid duplicates (same correspondence via different paths)
+        self.seen_correspondences = set()
+        
         # DevOps: Metrics for CI/CD monitoring
         self.metrics = {
             'backtrack_calls': 0,
             'pruned_inconsistent': 0,
             'pruned_vectors': 0,
-            'complete_matches': 0
+            'complete_matches': 0,
+            'duplicate_paths': 0
         }
         
     def search(self, max_results: int = 100) -> List[Dict]:
@@ -401,6 +405,15 @@ class CorrespondenceFinder:
         
         # BASE CASE: Check if we have matched ALL query points
         if len(new_correspondence) == len(self.query_points):
+            # Create fingerprint of this correspondence for deduplication
+            # Multiple backtracking paths can find the same correspondence
+            correspondence_key = (mol_id, frozenset(new_correspondence.items()))
+            
+            if correspondence_key in self.seen_correspondences:
+                self.metrics['duplicate_paths'] += 1
+                return  # Already found this correspondence via different path
+            
+            self.seen_correspondences.add(correspondence_key)
             self.metrics['complete_matches'] += 1
             self.results.append({
                 'mol_id': mol_id,
