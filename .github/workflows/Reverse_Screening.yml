@@ -115,6 +115,22 @@ jobs:
               conn = sqlite3.connect(db_path)
               cursor = conn.cursor()
               
+              # Check schema version
+              cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
+              has_version_table = cursor.fetchone() is not None
+              
+              if has_version_table:
+                  version = cursor.execute("SELECT version FROM schema_version").fetchone()[0]
+                  print(f"✓ Database schema version: {version}")
+                  
+                  if version < 2:
+                      print("WARNING: Database is using old schema (v{version})".format(version=version))
+                      print("         R*Tree spatial indexing not available")
+                      print("         Consider rebuilding database for optimal performance")
+              else:
+                  print("WARNING: No schema_version table found (legacy database)")
+                  print("         Consider rebuilding database with Schema v2")
+              
               # Check required tables
               cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
               tables = [row[0] for row in cursor.fetchall()]
@@ -128,10 +144,30 @@ jobs:
               
               print("✓ All required tables present")
               
+              # Check for R*Tree (Schema v2)
+              cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='triplet_rtree'")
+              has_rtree = cursor.fetchone() is not None
+              
+              if has_rtree:
+                  print("✓ R*Tree spatial indexing enabled")
+              else:
+                  print("⚠ R*Tree not found (using legacy B-tree)")
+              
               # Count entries
               for table in required_tables:
                   count = cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                   print(f"  {table}: {count} entries")
+              
+              # Validate R*Tree consistency if present
+              if has_rtree:
+                  triplet_count = cursor.execute("SELECT COUNT(*) FROM triplets").fetchone()[0]
+                  rtree_count = cursor.execute("SELECT COUNT(*) FROM triplet_rtree").fetchone()[0]
+                  
+                  if triplet_count == rtree_count:
+                      print(f"✓ R*Tree index consistent ({rtree_count} entries)")
+                  else:
+                      print(f"ERROR: R*Tree mismatch - triplets: {triplet_count}, rtree: {rtree_count}")
+                      sys.exit(1)
               
               conn.close()
               

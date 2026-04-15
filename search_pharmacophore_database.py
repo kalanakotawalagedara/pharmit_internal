@@ -287,7 +287,11 @@ class TripletMatcher:
 
 
 class CorrespondenceFinder:
-    """Recursive backtracking to find consistent pharmacophore correspondences"""
+    """Recursive backtracking to find consistent pharmacophore correspondences
+    
+    Fixed: Now handles gaps in triplet matches (matches Pharmit behavior)
+    CI/CD: Added metrics and logging for pipeline observability
+    """
     
     def __init__(self, query_points: List[Dict], query_triplets: List[Dict], 
                  mol_matches: Dict, db_conn, check_vectors: bool = True):
@@ -298,78 +302,131 @@ class CorrespondenceFinder:
         self.check_vectors = check_vectors
         self.results = []
         
+        # DevOps: Metrics for CI/CD monitoring
+        self.metrics = {
+            'backtrack_calls': 0,
+            'pruned_inconsistent': 0,
+            'pruned_vectors': 0,
+            'complete_matches': 0
+        }
+        
     def search(self, max_results: int = 100) -> List[Dict]:
-        """Find all consistent correspondences"""
+        """Find all consistent correspondences with improved backtracking
+        
+        Fixed: Handles gaps in triplet matches (e.g., triplet 0 has matches, 1-9 don't, 10 does)
+        DevOps: Logs progress for CI/CD pipeline debugging
+        """
+        logger.debug(f"Starting backtracking search across {len(self.mol_matches)} molecules")
+        
         for mol_id, triplet_matches in self.mol_matches.items():
-            # Start backtracking from first (rarest) triplet
-            if 0 in triplet_matches:
-                for db_triplet in triplet_matches[0]:
-                    self._backtrack(
-                        mol_id=mol_id,
-                        triplet_idx=0,
-                        correspondence={},
-                        matched_db_points=set(),
-                        triplet_matches=triplet_matches,
-                        db_triplet=db_triplet
-                    )
+            # Find first triplet that has matches (not necessarily index 0)
+            available_triplets = sorted([idx for idx in triplet_matches.keys() if triplet_matches[idx]])
+            
+            if not available_triplets:
+                logger.debug(f"  Mol {mol_id}: No triplets with matches, skipping")
+                continue
+            
+            first_triplet_idx = available_triplets[0]
+            triplet_count = len(triplet_matches)
+            logger.debug(f"  Mol {mol_id}: {triplet_count} triplets have matches, starting from index {first_triplet_idx}")
+            
+            # Start backtracking from first available triplet
+            for db_triplet in triplet_matches[first_triplet_idx]:
+                self._backtrack(
+                    mol_id=mol_id,
+                    triplet_idx=first_triplet_idx,
+                    correspondence={},
+                    matched_db_points=set(),
+                    triplet_matches=triplet_matches,
+                    db_triplet=db_triplet
+                )
             
             if len(self.results) >= max_results:
                 logger.info(f"Reached max results ({max_results}), stopping search")
                 break
         
+        # DevOps: Log metrics for CI/CD observability
         logger.info(f"Found {len(self.results)} valid correspondences")
+        logger.debug(f"Backtracking metrics: {self.metrics}")
+        
         return self.results
     
     def _backtrack(self, mol_id, triplet_idx, correspondence, 
                    matched_db_points, triplet_matches, db_triplet):
-        """Recursive backtracking"""
+        """Recursive backtracking with gap tolerance
         
-        # Check if this triplet is consistent
+        CRITICAL FIX: Iterates through ALL remaining triplets, skipping gaps.
+        This matches Pharmit C++ behavior (see Corresponder.h generate method).
+        
+        Previous bug: Stopped at first gap (triplet with 0 matches).
+        Now: Continues through all triplets, using only those with matches.
+        """
+        self.metrics['backtrack_calls'] += 1
+        
+        # Validate db_triplet structure (defensive programming for CI/CD)
+        if not all(k in db_triplet for k in ['point1_idx', 'point2_idx', 'point3_idx']):
+            logger.warning(f"Invalid db_triplet structure, skipping: {db_triplet}")
+            return
+        
+        # Check if this triplet is consistent with current correspondence
         query_triplet = self.query_triplets[triplet_idx]
         query_indices = query_triplet['query_indices']
         db_indices = [db_triplet['point1_idx'], db_triplet['point2_idx'], db_triplet['point3_idx']]
         
-        # Verify consistency
+        # Verify correspondence consistency (early pruning)
         new_mapping = {}
         for q_idx, db_idx in zip(query_indices, db_indices):
             if q_idx in correspondence:
                 if correspondence[q_idx] != db_idx:
-                    return  # Inconsistent
+                    self.metrics['pruned_inconsistent'] += 1
+                    return  # Inconsistent with existing correspondence
             else:
                 if db_idx in matched_db_points:
-                    return  # DB point already used
+                    self.metrics['pruned_inconsistent'] += 1
+                    return  # Database point already matched to different query point
                 new_mapping[q_idx] = db_idx
         
-        # Check vectors if enabled
+        # Check vector constraints if enabled
         if self.check_vectors and new_mapping:
             if not self._check_vectors(mol_id, db_triplet, query_indices, new_mapping):
+                self.metrics['pruned_vectors'] += 1
                 return
         
-        # Update correspondence
+        # Update correspondence with new mappings
         new_correspondence = correspondence.copy()
         new_correspondence.update(new_mapping)
         
         new_matched = matched_db_points.copy()
         new_matched.update(new_mapping.values())
         
-        # Base case: all triplets matched
-        if triplet_idx == len(self.query_triplets) - 1:
-            if len(new_correspondence) == len(self.query_points):
-                self.results.append({
-                    'mol_id': mol_id,
-                    'correspondence': new_correspondence,
-                    'num_matched': len(new_correspondence)
-                })
+        # BASE CASE: Check if we have matched ALL query points
+        if len(new_correspondence) == len(self.query_points):
+            self.metrics['complete_matches'] += 1
+            self.results.append({
+                'mol_id': mol_id,
+                'correspondence': new_correspondence,
+                'num_matched': len(new_correspondence)
+            })
             return
         
-        # Recursive case: try next triplet
-        next_idx = triplet_idx + 1
-        if next_idx in triplet_matches:
+        # RECURSIVE CASE (FIXED): Try ALL remaining triplets, skip gaps
+        # OLD: next_idx = triplet_idx + 1; if next_idx in triplet_matches: ...
+        # NEW: Iterate through all remaining indices, skip those with no matches
+        for next_idx in range(triplet_idx + 1, len(self.query_triplets)):
+            # Skip if this triplet has no database matches (THE FIX)
+            if next_idx not in triplet_matches:
+                continue  # Gap handling: skip but continue to next index
+            
+            # Try all database triplets at this position
             for next_db_triplet in triplet_matches[next_idx]:
                 self._backtrack(
                     mol_id, next_idx, new_correspondence,
                     new_matched, triplet_matches, next_db_triplet
                 )
+    
+    def _check_vectors(self, mol_id, db_triplet, query_indices, new_mapping):
+        """Check vector constraints for H-bonds"""
+        cursor = self.db_conn.cursor()
     
     def _check_vectors(self, mol_id, db_triplet, query_indices, new_mapping):
         """Check vector constraints for H-bonds"""
@@ -539,8 +596,8 @@ class PharmacophoreSearch:
         logger.info("="*70)
         logger.info(f"Query: {self.query_path}")
         logger.info(f"Database: {self.db_path}")
-        logger.info(f"Distance tolerance: {self.distance_tolerance} Å")
-        logger.info(f"RMSD threshold: {self.rmsd_threshold} Å")
+        logger.info(f"Distance tolerance: {self.distance_tolerance} Angstrom")
+        logger.info(f"RMSD threshold: {self.rmsd_threshold} Angstrom")
         logger.info(f"Max results: {self.max_results}")
         logger.info("="*70)
         
@@ -607,7 +664,7 @@ class PharmacophoreSearch:
         
         matcher.close()
         
-        logger.info(f"\nFound {len(self.results)} matches (RMSD ≤ {self.rmsd_threshold} Å)")
+        logger.info(f"\nFound {len(self.results)} matches (RMSD <= {self.rmsd_threshold} Angstrom)")
         logger.info("="*70)
         
         return self.results
@@ -736,10 +793,10 @@ Examples:
             output_csv = Path(args.output)
             log_file = Path(args.log)
             search.save_results(output_csv, log_file)
-            logger.info(f"\n✓ Search complete! Found {len(results)} matches")
+            logger.info(f"\n[SUCCESS] Search complete! Found {len(results)} matches")
             return 0
         else:
-            logger.warning("\n✗ No matches found")
+            logger.warning("\n[NO MATCHES] No matches found")
             return 0  # Not an error, just no results
             
     except (QueryParseError, DatabaseConnectionError) as e:
