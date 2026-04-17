@@ -7,7 +7,7 @@
             "y": 19.239,
             "z": 100.813,
             "radius": 1,
-            "enabled": false,
+            "enabled": true,
             "vector_on": 1,
             "svector": {
                 "x": -0.37676783844992845,
@@ -25,7 +25,7 @@
             "y": 19.239,
             "z": 100.813,
             "radius": 1,
-            "enabled": true,
+            "enabled": false,
             "vector_on": 1,
             "svector": {
                 "x": 0.5588757094466532,
