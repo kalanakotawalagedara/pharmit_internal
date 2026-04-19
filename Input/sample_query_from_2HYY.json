@@ -7,48 +7,12 @@
             "y": 11.369,
             "z": 13.879,
             "radius": 1,
-            "enabled": true,
+            "enabled": false,
             "vector_on": 0,
             "svector": {
                 "x": 0.25061146493886327,
                 "y": -0.8197131663174272,
                 "z": 0.5150380749100544
-            },
-            "minsize": "",
-            "maxsize": "",
-            "selected": false
-        },
-        {
-            "name": "HydrogenAcceptor",
-            "hasvec": true,
-            "x": 20.892,
-            "y": 10.57,
-            "z": 12.904,
-            "radius": 1,
-            "enabled": true,
-            "vector_on": 1,
-            "svector": {
-                "x": -0.4166745553523912,
-                "y": -0.302731784801236,
-                "z": -0.8571673007021122
-            },
-            "minsize": "",
-            "maxsize": "",
-            "selected": false
-        },
-        {
-            "name": "HydrogenAcceptor",
-            "hasvec": true,
-            "x": 13.399,
-            "y": 15.803,
-            "z": 16.931,
-            "radius": 1,
-            "enabled": true,
-            "vector_on": 1,
-            "svector": {
-                "x": 0.3581496414732153,
-                "y": 0.9330117145258786,
-                "z": -0.03489949670250073
             },
             "minsize": "",
             "maxsize": "",
@@ -70,7 +34,7 @@
             },
             "minsize": "",
             "maxsize": "",
-            "selected": false
+            "selected": true
         },
         {
             "name": "HydrogenDonor",
@@ -79,12 +43,66 @@
             "y": 14.735,
             "z": 18.814,
             "radius": 1,
-            "enabled": true,
-            "vector_on": 1,
+            "enabled": false,
+            "vector_on": 0,
             "svector": {
                 "x": -0.17001205975432954,
                 "y": 0.08662547116579847,
                 "z": 0.981627183447664
+            },
+            "minsize": "",
+            "maxsize": "",
+            "selected": false
+        },
+        {
+            "name": "HydrogenAcceptor",
+            "hasvec": true,
+            "x": 20.892,
+            "y": 10.57,
+            "z": 12.904,
+            "radius": 1,
+            "enabled": true,
+            "vector_on": 1,
+            "svector": {
+                "x": -0.4166745553523912,
+                "y": -0.302731784801236,
+                "z": -0.8571673007021122
+            },
+            "minsize": "",
+            "maxsize": "",
+            "selected": true
+        },
+        {
+            "name": "HydrogenAcceptor",
+            "hasvec": true,
+            "x": 13.399,
+            "y": 15.803,
+            "z": 16.931,
+            "radius": 1,
+            "enabled": true,
+            "vector_on": 1,
+            "svector": {
+                "x": 0.3581496414732153,
+                "y": 0.9330117145258786,
+                "z": -0.03489949670250073
+            },
+            "minsize": "",
+            "maxsize": "",
+            "selected": true
+        },
+        {
+            "name": "Hydrophobic",
+            "hasvec": false,
+            "x": 21.457,
+            "y": 11.369,
+            "z": 13.879,
+            "radius": 1,
+            "enabled": false,
+            "vector_on": 0,
+            "svector": {
+                "x": 1,
+                "y": 0,
+                "z": 0
             },
             "minsize": "",
             "maxsize": "",
@@ -106,7 +124,7 @@
             },
             "minsize": "",
             "maxsize": "",
-            "selected": false
+            "selected": true
         },
         {
             "name": "Hydrophobic",
@@ -115,7 +133,7 @@
             "y": 10.053,
             "z": 18.815,
             "radius": 1,
-            "enabled": true,
+            "enabled": false,
             "vector_on": 0,
             "svector": {
                 "x": 1,
@@ -237,24 +255,6 @@
         {
             "name": "Hydrophobic",
             "hasvec": false,
-            "x": 21.457,
-            "y": 11.369,
-            "z": 13.879,
-            "radius": 1,
-            "enabled": false,
-            "vector_on": 0,
-            "svector": {
-                "x": 1,
-                "y": 0,
-                "z": 0
-            },
-            "minsize": "",
-            "maxsize": "",
-            "selected": false
-        },
-        {
-            "name": "Hydrophobic",
-            "hasvec": false,
             "x": 10.373,
             "y": 17.592,
             "z": 17.89,
@@ -304,8 +304,7 @@
             },
             "minsize": "",
             "maxsize": "",
-            "selected": false,
-            "hidden": false
+            "selected": false
         },
         {
             "name": "InclusionSphere",
@@ -323,8 +322,7 @@
             },
             "minsize": "",
             "maxsize": "",
-            "selected": false,
-            "hidden": false
+            "selected": false
         },
         {
             "name": "InclusionSphere",
@@ -342,8 +340,7 @@
             },
             "minsize": "",
             "maxsize": "",
-            "selected": false,
-            "hidden": false
+            "selected": false
         },
         {
             "name": "InclusionSphere",
@@ -361,8 +358,7 @@
             },
             "minsize": "",
             "maxsize": "",
-            "selected": false,
-            "hidden": false
+            "selected": false
         },
         {
             "name": "InclusionSphere",
@@ -380,8 +376,7 @@
             },
             "minsize": "",
             "maxsize": "",
-            "selected": false,
-            "hidden": false
+            "selected": false
         },
         {
             "name": "InclusionSphere",
@@ -399,16 +394,15 @@
             },
             "minsize": "",
             "maxsize": "",
-            "selected": false,
-            "hidden": false
+            "selected": false
         }
     ],
     "subset": "molport",
     "ShapeModeSelect": "filter",
-    "inselect": "points",
+    "inselect": "none",
     "intolerance": 1,
     "inshapestyle": "inshapestyle-solid",
-    "exselect": "points",
+    "exselect": "none",
     "extolerance": 1,
     "exshapestyle": "exshapestyle-solid",
     "max-orient": "",
@@ -448,9 +442,9 @@
         -15.282540540540543,
         -17.632270270270272,
         87.26030786139059,
-        0.07200550389401932,
-        -0.09798151760656786,
-        -0.002357902298296973,
-        0.9925770851239886
+        0.12307440096515992,
+        0.10985683838622023,
+        -0.023406928260969892,
+        0.9860204270684437
     ]
 }
