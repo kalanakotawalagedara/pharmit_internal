@@ -8,7 +8,7 @@
             "z": 13.879,
             "radius": 1,
             "enabled": true,
-            "vector_on": 1,
+            "vector_on": 0,
             "svector": {
                 "x": 0.25061146493886327,
                 "y": -0.8197131663174272,
