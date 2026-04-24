@@ -32,6 +32,59 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def parse_pdb_atoms(pdb_content: str, atom_types: Optional[List[str]] = None) -> List[Dict]:
+    """
+    Extract atomic coordinates from PDB content for exit vector computation
+    
+    Args:
+        pdb_content: PDB format text
+        atom_types: Optional filter for specific atom records (e.g., ['ATOM', 'HETATM'])
+    
+    Returns:
+        List of {'x': float, 'y': float, 'z': float, 'element': str}
+    """
+    if atom_types is None:
+        atom_types = ['ATOM', 'HETATM']
+    
+    atoms = []
+    for line in pdb_content.split('\n'):
+        if len(line) < 54:  # Minimum PDB line length for coordinates
+            continue
+            
+        record_type = line[0:6].strip()
+        
+        if record_type not in atom_types:
+            continue
+        
+        try:
+            # Extract coordinates (PDB format columns 31-54)
+            x = float(line[30:38].strip())
+            y = float(line[38:46].strip())
+            z = float(line[46:54].strip())
+            
+            # Extract element symbol (columns 77-78, fallback to atom name)
+            element = ''
+            if len(line) > 77:
+                element = line[76:78].strip()
+            if not element and len(line) > 13:
+                atom_name = line[12:16].strip()
+                # First character usually indicates element (remove digits)
+                element = ''.join(c for c in atom_name if c.isalpha())[:1]
+            
+            if element:  # Only add if we have a valid element
+                atoms.append({
+                    'x': x,
+                    'y': y,
+                    'z': z,
+                    'element': element.upper()
+                })
+        except (ValueError, IndexError):
+            # Skip malformed lines
+            continue
+    
+    return atoms
+
+
 # Pharmit SMARTS patterns from pharmarec.cpp (exact C++ definitions)
 PHARMACOPHORE_DEFINITIONS = {
     'Aromatic': {
@@ -541,6 +594,12 @@ def process_entry(pdb_id: str, ligand_name: str, output_dir: Path) -> bool:
             logger.error(f"Failed to generate pharmacophore for {pdb_id}_{ligand_name}")
             return False
         
+        # Extract atomic coordinates for exit vector computation
+        ligand_atoms = parse_pdb_atoms(ligand_pdb, atom_types=['HETATM', 'ATOM'])
+        protein_atoms = parse_pdb_atoms(receptor_pdb, atom_types=['ATOM'])
+        
+        logger.info(f"Extracted {len(ligand_atoms)} ligand atoms, {len(protein_atoms)} protein atoms")
+        
         # Prepare output JSON
         output_data = {
             'pdb_id': pdb_id.upper(),
@@ -549,9 +608,11 @@ def process_entry(pdb_id: str, ligand_name: str, output_dir: Path) -> bool:
             'processing_date': datetime.utcnow().isoformat() + 'Z',
             'num_features': len(result['validated_features']),
             'features': result['validated_features'],
+            'ligand_atoms': ligand_atoms,
+            'protein_atoms': protein_atoms,
             'metadata': {
-                'ligand_atoms': result['ligand_atom_count'],
-                'receptor_atoms': result['receptor_atom_count'],
+                'ligand_atom_count': len(ligand_atoms),
+                'protein_atom_count': len(protein_atoms),
                 'screened_out_features': len(result['screened_features'])
             }
         }

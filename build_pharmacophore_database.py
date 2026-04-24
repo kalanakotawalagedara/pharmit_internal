@@ -14,9 +14,18 @@ import itertools
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from datetime import datetime
 import numpy as np
+
+# Try to import scipy for exit vector computation
+try:
+    from scipy.spatial.distance import cdist
+    from scipy.cluster.hierarchy import fclusterdata
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+    # Will log warning in class __init__
 
 # Logger will be configured in main() based on command-line arguments
 logger = logging.getLogger(__name__)
@@ -38,10 +47,10 @@ class PharmacophoreDatabase:
     Build searchable pharmacophore database with triangle decomposition
     Implements R*Tree spatial indexing for production-scale target fishing
     
-    Schema Version: 2 (includes R*Tree virtual table)
+    Schema Version: 3 (includes exit vectors for lead optimization)
     """
     
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
     
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -54,8 +63,15 @@ class PharmacophoreDatabase:
             'triplets_generated': 0,
             'rtree_entries': 0,
             'vectors_stored': 0,
+            'inclusion_spheres': 0,
+            'exclusion_spheres': 0,
+            'exit_vectors': 0,
             'errors': []
         }
+        
+        if not HAS_SCIPY:
+            logger.warning("scipy not installed - exit vector computation will be disabled")
+            logger.warning("Install with: pip install scipy")
     
     def connect(self):
         """Initialize database connection"""
@@ -85,7 +101,7 @@ class PharmacophoreDatabase:
         cursor.execute('''
             INSERT OR IGNORE INTO schema_version (version, description)
             VALUES (?, ?)
-        ''', (self.SCHEMA_VERSION, 'R*Tree spatial indexing for production scale'))
+        ''', (self.SCHEMA_VERSION, 'Exit vectors & shape constraints for lead optimization'))
         
         # Pharmacophore type definitions
         cursor.execute('''
@@ -171,6 +187,59 @@ class PharmacophoreDatabase:
             )
         ''')
         
+        # ============================================================
+        # Shape Constraints & Exit Vectors (Schema Extension v3)
+        # ============================================================
+        logger.info("Creating shape constraint tables...")
+        
+        # Inclusion spheres (ligand-protein interface hotspots)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS inclusion_spheres (
+                sphere_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mol_id INTEGER NOT NULL,
+                sphere_idx INTEGER NOT NULL,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                z REAL NOT NULL,
+                radius REAL NOT NULL,
+                FOREIGN KEY(mol_id) REFERENCES molecules(mol_id)
+            )
+        ''')
+        
+        # Exclusion spheres (protein volume - occupied space)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS exclusion_spheres (
+                sphere_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mol_id INTEGER NOT NULL,
+                sphere_idx INTEGER NOT NULL,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                z REAL NOT NULL,
+                radius REAL NOT NULL,
+                FOREIGN KEY(mol_id) REFERENCES molecules(mol_id)
+            )
+        ''')
+        
+        # Exit vectors (growth direction opportunities)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS exit_vectors (
+                vector_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mol_id INTEGER NOT NULL,
+                vector_idx INTEGER NOT NULL,
+                origin_x REAL NOT NULL,
+                origin_y REAL NOT NULL,
+                origin_z REAL NOT NULL,
+                direction_x REAL NOT NULL,
+                direction_y REAL NOT NULL,
+                direction_z REAL NOT NULL,
+                length REAL NOT NULL,
+                quality_score REAL DEFAULT 1.0,
+                FOREIGN KEY(mol_id) REFERENCES molecules(mol_id)
+            )
+        ''')
+        
+        logger.info("✓ Shape constraint tables created")
+        
         # R*Tree spatial index for triplet distance matching
         logger.info("Creating R*Tree spatial index...")
         cursor.execute('''
@@ -193,6 +262,13 @@ class PharmacophoreDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_vector_triplet ON vectors(triplet_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_mol_features ON features(mol_id)')
         
+        # Shape constraint indices
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_inclusion_mol ON inclusion_spheres(mol_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_exclusion_mol ON exclusion_spheres(mol_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_exit_vectors_mol ON exit_vectors(mol_id)')
+        
+        logger.info("✓ Shape constraint indices created")
+        
         # Note: Distance indices now handled by R*Tree spatial index
         # Legacy indices kept for compatibility but R*Tree will be preferred
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_dist12 ON triplets(dist12)')
@@ -200,7 +276,7 @@ class PharmacophoreDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_dist31 ON triplets(dist31)')
         
         self.conn.commit()
-        logger.info("✓ Schema v2 created successfully with R*Tree")
+        logger.info("✓ Schema v3 created successfully with exit vectors")
     
     def calculate_distance(self, p1: Dict, p2: Dict) -> float:
         """Calculate Euclidean distance between two points"""
@@ -208,6 +284,172 @@ class PharmacophoreDatabase:
         dy = p1['y'] - p2['y']
         dz = p1['z'] - p2['z']
         return float(np.sqrt(dx*dx + dy*dy + dz*dz))
+    
+    def compute_inclusion_spheres(self, ligand_atoms: List[Dict], 
+                                   protein_atoms: List[Dict],
+                                   interaction_dist: float = 4.5,
+                                   max_cluster_dist: float = 2.5,
+                                   min_cluster_size: int = 3) -> List[Dict]:
+        """
+        Compute inclusion spheres from ligand-protein interface clustering
+        
+        Algorithm (Pharmit OBAMolecule::computeInteractionPoints):
+        1. Find ligand atoms within interaction_dist of protein
+        2. Cluster interface atoms by proximity
+        3. Calculate cluster centers → inclusion sphere positions
+        4. Filter small clusters (noise removal)
+        
+        Returns:
+            List of {'center': (x, y, z), 'radius': float}
+        """
+        if not HAS_SCIPY:
+            return []
+        
+        if not ligand_atoms or not protein_atoms:
+            return []
+        
+        try:
+            # Convert to numpy arrays
+            ligand_coords = np.array([[a['x'], a['y'], a['z']] for a in ligand_atoms])
+            protein_coords = np.array([[a['x'], a['y'], a['z']] for a in protein_atoms])
+            
+            # Find interface atoms (ligand atoms near protein)
+            distances = cdist(ligand_coords, protein_coords)
+            interface_mask = np.any(distances <= interaction_dist, axis=1)
+            interface_atoms = ligand_coords[interface_mask]
+            
+            if len(interface_atoms) < min_cluster_size:
+                return []
+            
+            # Cluster interface atoms
+            clusters = fclusterdata(interface_atoms, max_cluster_dist, 
+                                   criterion='distance', method='complete')
+            
+            # Generate inclusion spheres from cluster centers
+            inclusion_spheres = []
+            for cluster_id in np.unique(clusters):
+                cluster_atoms = interface_atoms[clusters == cluster_id]
+                
+                if len(cluster_atoms) >= min_cluster_size:
+                    center = np.mean(cluster_atoms, axis=0)
+                    radius = np.max(np.linalg.norm(cluster_atoms - center, axis=1)) + 1.0
+                    
+                    inclusion_spheres.append({
+                        'center': tuple(center.astype(float)),
+                        'radius': float(radius)
+                    })
+            
+            return inclusion_spheres
+            
+        except Exception as e:
+            logger.debug(f"  Inclusion sphere computation failed: {e}")
+            return []
+    
+    def compute_exclusion_spheres(self, protein_atoms: List[Dict],
+                                  probe_radius: float = 1.4) -> List[Dict]:
+        """
+        Compute exclusion spheres representing protein volume
+        
+        Creates spheres around protein atoms (vdW radius + probe)
+        Marks "forbidden" space where ligand atoms cannot be
+        
+        Returns:
+            List of {'center': (x, y, z), 'radius': float}
+        """
+        # Van der Waals radii (Angstroms)
+        VDW_RADII = {
+            'H': 1.20, 'C': 1.70, 'N': 1.55, 'O': 1.52, 'S': 1.80,
+            'P': 1.80, 'F': 1.47, 'CL': 1.75, 'BR': 1.85, 'I': 1.98
+        }
+        
+        exclusion_spheres = []
+        
+        for atom in protein_atoms:
+            element = atom.get('element', 'C').upper()
+            vdw = VDW_RADII.get(element, 1.70)
+            
+            exclusion_spheres.append({
+                'center': (atom['x'], atom['y'], atom['z']),
+                'radius': float(vdw + probe_radius)
+            })
+        
+        return exclusion_spheres
+    
+    def generate_exit_vectors(self, inclusion_spheres: List[Dict],
+                              exclusion_spheres: List[Dict],
+                              num_samples: int = 42,
+                              min_length: float = 2.0,
+                              max_length: float = 10.0) -> List[Dict]:
+        """
+        Generate exit vectors by ray-casting from inclusion spheres
+        
+        Exit vectors point from binding hotspots toward open space
+        Computed by sampling directions and finding clearance
+        
+        Returns:
+            List of {'origin': (x,y,z), 'direction': (dx,dy,dz), 
+                     'length': float, 'quality_score': float}
+        """
+        def fibonacci_sphere(n):
+            """Uniformly distributed points on unit sphere"""
+            points = []
+            phi = np.pi * (3. - np.sqrt(5.))
+            
+            for i in range(n):
+                y = 1 - (i / float(n - 1)) * 2
+                radius = np.sqrt(1 - y * y)
+                theta = phi * i
+                x = np.cos(theta) * radius
+                z = np.sin(theta) * radius
+                points.append(np.array([x, y, z]))
+            return points
+        
+        def ray_sphere_intersection(ray_origin, ray_dir, sphere_center, sphere_radius):
+            """Ray-sphere intersection distance (None if no hit)"""
+            oc = ray_origin - sphere_center
+            a = np.dot(ray_dir, ray_dir)
+            b = 2.0 * np.dot(oc, ray_dir)
+            c = np.dot(oc, oc) - sphere_radius**2
+            discriminant = b**2 - 4*a*c
+            
+            if discriminant < 0:
+                return None
+            
+            t = (-b - np.sqrt(discriminant)) / (2.0*a)
+            return t if t > 0 else None
+        
+        if not inclusion_spheres or not exclusion_spheres:
+            return []
+        
+        exit_vectors = []
+        directions = fibonacci_sphere(num_samples)
+        
+        for inc_sphere in inclusion_spheres:
+            origin = np.array(inc_sphere['center'])
+            
+            for direction in directions:
+                min_dist = float('inf')
+                
+                for exc_sphere in exclusion_spheres:
+                    exc_center = np.array(exc_sphere['center'])
+                    exc_radius = exc_sphere['radius']
+                    
+                    dist = ray_sphere_intersection(origin, direction, exc_center, exc_radius)
+                    if dist is not None:
+                        min_dist = min(min_dist, dist)
+                
+                if min_dist > min_length and min_dist < float('inf'):
+                    length = min(min_dist, max_length)
+                    quality = min(length / 5.0, 1.0)
+                    
+                    exit_vectors.append({
+                        'origin': tuple(origin.astype(float)),
+                        'direction': tuple(direction.astype(float)),
+                        'length': float(length),
+                        'quality_score': float(quality)
+                    })
+        
+        return exit_vectors
     
     def add_molecule(self, json_path: Path) -> bool:
         """
@@ -291,6 +533,82 @@ class PharmacophoreDatabase:
                 ''', (mol_id, point_idx, type_id, x, y, z, vector_x, vector_y, vector_z))
                 
                 feature_count += 1
+            
+            # ============================================================
+            # Compute and store shape constraints & exit vectors
+            # ============================================================
+            inclusion_count = 0
+            exclusion_count = 0
+            exit_vector_count = 0
+            
+            if HAS_SCIPY and 'ligand_atoms' in data and 'protein_atoms' in data:
+                try:
+                    logger.debug(f"  Computing exit vectors...")
+                    
+                    # Compute inclusion spheres
+                    inclusion_spheres = self.compute_inclusion_spheres(
+                        data['ligand_atoms'],
+                        data['protein_atoms']
+                    )
+                    
+                    # Store inclusion spheres
+                    for idx, sphere in enumerate(inclusion_spheres):
+                        cursor.execute('''
+                            INSERT INTO inclusion_spheres (mol_id, sphere_idx, x, y, z, radius)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        ''', (mol_id, idx, *sphere['center'], sphere['radius']))
+                    inclusion_count = len(inclusion_spheres)
+                    
+                    # Compute exclusion spheres
+                    exclusion_spheres = self.compute_exclusion_spheres(
+                        data['protein_atoms']
+                    )
+                    
+                    # Store exclusion spheres
+                    for idx, sphere in enumerate(exclusion_spheres):
+                        cursor.execute('''
+                            INSERT INTO exclusion_spheres (mol_id, sphere_idx, x, y, z, radius)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        ''', (mol_id, idx, *sphere['center'], sphere['radius']))
+                    exclusion_count = len(exclusion_spheres)
+                    
+                    # Generate exit vectors
+                    if inclusion_spheres and exclusion_spheres:
+                        exit_vectors = self.generate_exit_vectors(
+                            inclusion_spheres,
+                            exclusion_spheres
+                        )
+                        
+                        # Store exit vectors
+                        for idx, vec in enumerate(exit_vectors):
+                            cursor.execute('''
+                                INSERT INTO exit_vectors (
+                                    mol_id, vector_idx,
+                                    origin_x, origin_y, origin_z,
+                                    direction_x, direction_y, direction_z,
+                                    length, quality_score
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (mol_id, idx, *vec['origin'], *vec['direction'], 
+                                  vec['length'], vec['quality_score']))
+                        exit_vector_count = len(exit_vectors)
+                    
+                    if inclusion_count > 0 or exit_vector_count > 0:
+                        logger.info(f"  Exit vectors: {inclusion_count} inclusion, "
+                                   f"{exclusion_count} exclusion, {exit_vector_count} vectors")
+                    
+                    self.stats['inclusion_spheres'] += inclusion_count
+                    self.stats['exclusion_spheres'] += exclusion_count
+                    self.stats['exit_vectors'] += exit_vector_count
+                    
+                except Exception as e:
+                    logger.warning(f"  Exit vector computation failed: {e}")
+                    # Continue without exit vectors (graceful degradation)
+            
+            else:
+                if not HAS_SCIPY:
+                    logger.debug("  scipy not installed, skipping exit vectors")
+                elif 'ligand_atoms' not in data or 'protein_atoms' not in data:
+                    logger.debug("  No atom coordinates in JSON, skipping exit vectors")
             
             # Generate all C(N,3) triplets
             triplet_count = 0
@@ -484,6 +802,16 @@ class PharmacophoreDatabase:
         cursor.execute('SELECT COUNT(*) as count FROM vectors')
         num_vectors = cursor.fetchone()['count']
         
+        # Exit vector statistics
+        cursor.execute('SELECT COUNT(*) as count FROM inclusion_spheres')
+        num_inclusion = cursor.fetchone()['count']
+        
+        cursor.execute('SELECT COUNT(*) as count FROM exclusion_spheres')
+        num_exclusion = cursor.fetchone()['count']
+        
+        cursor.execute('SELECT COUNT(*) as count FROM exit_vectors')
+        num_exit_vectors = cursor.fetchone()['count']
+        
         cursor.execute('SELECT AVG(num_features) as avg FROM molecules')
         avg_features = cursor.fetchone()['avg'] or 0
         
@@ -506,7 +834,7 @@ class PharmacophoreDatabase:
         db_size_mb = os.path.getsize(self.db_path) / (1024*1024) if os.path.exists(self.db_path) else 0
         
         print("\n" + "="*70)
-        print("DATABASE STATISTICS (Schema v2 with R*Tree)")
+        print("DATABASE STATISTICS (Schema v3 with Exit Vectors)")
         print("="*70)
         print(f"Molecules processed:    {self.stats['molecules_processed']:,}")
         print(f"Molecules failed:       {self.stats['molecules_failed']:,}")
@@ -516,9 +844,16 @@ class PharmacophoreDatabase:
         print(f"Total features:         {num_features:,}")
         print(f"Total triplets:         {num_triplets:,}")
         print(f"R*Tree entries:         {num_rtree:,}")
-        print(f"Total vectors:          {num_vectors:,}")
+        print(f"Total H-bond vectors:   {num_vectors:,}")
         print(f"Avg features/molecule:  {avg_features:.1f}")
         print(f"Avg triplets/molecule:  {num_triplets/num_mols if num_mols > 0 else 0:.1f}")
+        print(f"-" * 70)
+        print(f"Shape Constraints & Exit Vectors:")
+        print(f"  Inclusion spheres:    {num_inclusion:,}")
+        print(f"  Exclusion spheres:    {num_exclusion:,}")
+        print(f"  Exit vectors:         {num_exit_vectors:,}")
+        if num_mols > 0:
+            print(f"  Avg exit vecs/mol:    {num_exit_vectors/num_mols:.1f}")
         print(f"-" * 70)
         print(f"Database file size:     {db_size_mb:.2f} MB")
         print(f"-" * 70)

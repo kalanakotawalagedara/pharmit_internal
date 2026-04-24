@@ -98,9 +98,10 @@ jobs:
       - name: Install RDKit and dependencies
         shell: bash -el {0}
         run: |
-          conda install -y -c conda-forge rdkit pandas numpy requests python-dateutil
+          conda install -y -c conda-forge rdkit pandas numpy scipy requests python-dateutil
           python --version
           python -c "from rdkit import Chem; print('RDKit version:', Chem.rdBase.rdkitVersion)"
+          python -c "import scipy; print('scipy version:', scipy.__version__)"
       
       - name: Determine batch parameters
         id: batch-params
