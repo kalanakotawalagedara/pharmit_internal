@@ -135,6 +135,47 @@ jobs:
               --batch-size $BATCH_SIZE
           fi
       
+      - name: Verify JSON output
+        shell: bash -el {0}
+        run: |
+          JSON_COUNT=$(find Output -name "*.json" | wc -l)
+          echo "Generated $JSON_COUNT JSON files"
+          
+          if [ "$JSON_COUNT" -eq "0" ]; then
+            echo "ERROR: No JSON files generated"
+            exit 1
+          fi
+          
+          # Verify first JSON has atomic coordinates
+          FIRST_JSON=$(find Output -name "*.json" | head -n 1)
+          echo "Verifying: $FIRST_JSON"
+          
+          python << PYEOF
+          import json
+          import sys
+          
+          with open('$FIRST_JSON', 'r') as f:
+              data = json.load(f)
+          
+          has_ligand = 'ligand_atoms' in data
+          has_protein = 'protein_atoms' in data
+          
+          print(f"Has ligand_atoms: {has_ligand}")
+          print(f"Has protein_atoms: {has_protein}")
+          
+          if has_ligand:
+              print(f"Ligand atoms: {len(data['ligand_atoms'])}")
+          if has_protein:
+              print(f"Protein atoms: {len(data['protein_atoms'])}")
+          
+          if not (has_ligand and has_protein):
+              print("\n✗ ERROR: JSON missing atomic coordinates!")
+              print("  Exit vectors will NOT be computed during database build")
+              sys.exit(1)
+          else:
+              print("\n✓ JSON has atomic coordinates for exit vector computation")
+          PYEOF
+      
       - name: Upload pharmacophore JSONs
         uses: actions/upload-artifact@v4
         with:
@@ -262,8 +303,9 @@ jobs:
       - name: Install dependencies
         shell: bash -el {0}
         run: |
-          conda install -y -c conda-forge rdkit pandas numpy python-dateutil
+          conda install -y -c conda-forge rdkit pandas numpy scipy python-dateutil
           python --version
+          python -c "import scipy; print('scipy version:', scipy.__version__)"
       
       - name: Download merged pharmacophores
         uses: actions/download-artifact@v4
@@ -295,6 +337,7 @@ jobs:
           cat Database/build_log.json
       
       - name: Verify database
+        shell: bash -el {0}
         run: |
           if [ ! -f "Database/pharmacophores.db" ]; then
             echo "ERROR: Database file not created"
@@ -305,13 +348,70 @@ jobs:
           DB_SIZE=$(du -h Database/pharmacophores.db | cut -f1)
           echo "Database size: $DB_SIZE"
           
-          # Count molecules in database
-          MOLECULE_COUNT=$(sqlite3 Database/pharmacophores.db "SELECT COUNT(*) FROM molecules;")
-          echo "Molecules in database: $MOLECULE_COUNT"
+          # Comprehensive database validation
+          python << 'PYEOF'
+          import sqlite3
+          import sys
           
-          # Count triplets
-          TRIPLET_COUNT=$(sqlite3 Database/pharmacophores.db "SELECT COUNT(*) FROM triplets;")
-          echo "Total triplets: $TRIPLET_COUNT"
+          conn = sqlite3.connect('Database/pharmacophores.db')
+          cursor = conn.cursor()
+          
+          # Get table list
+          tables = [row[0] for row in cursor.execute(
+              "SELECT name FROM sqlite_master WHERE type='table'"
+          ).fetchall()]
+          
+          print("\n=== Database Validation ===")
+          print(f"Tables found: {len(tables)}")
+          print(f"  {', '.join(tables)}")
+          
+          # Check schema version
+          if 'schema_version' in tables:
+              version = cursor.execute('SELECT version FROM schema_version').fetchone()[0]
+              print(f"\nSchema version: v{version}")
+              
+              if version < 3:
+                  print("⚠ WARNING: Schema version < 3, exit vectors not supported")
+          
+          # Count key tables
+          stats = {}
+          for table in ['molecules', 'features', 'triplets', 'inclusion_spheres', 
+                       'exclusion_spheres', 'exit_vectors']:
+              if table in tables:
+                  count = cursor.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
+                  stats[table] = count
+                  print(f"  {table}: {count:,}")
+              else:
+                  print(f"  {table}: MISSING")
+          
+          # Validate exit vectors
+          has_exit_vector_tables = all(t in tables for t in 
+                                       ['inclusion_spheres', 'exclusion_spheres', 'exit_vectors'])
+          
+          if has_exit_vector_tables:
+              if stats.get('exit_vectors', 0) > 0:
+                  avg_vectors = stats['exit_vectors'] / max(stats['molecules'], 1)
+                  print(f"\n✓ Exit vectors: {stats['exit_vectors']:,} total ({avg_vectors:.1f} per molecule)")
+                  print("✓ Schema v3 with exit vectors ENABLED")
+              else:
+                  print("\n✗ ERROR: exit_vectors table exists but is EMPTY!")
+                  print("  This means scipy was not available during build")
+                  sys.exit(1)
+          else:
+              print("\n✗ ERROR: Exit vector tables missing (Schema v3 not created)")
+              sys.exit(1)
+          
+          # Check R*Tree
+          if 'triplet_rtree' in tables:
+              rtree_count = cursor.execute('SELECT COUNT(*) FROM triplet_rtree').fetchone()[0]
+              if rtree_count == stats.get('triplets', 0):
+                  print(f"✓ R*Tree spatial index: {rtree_count:,} entries (consistent)")
+              else:
+                  print(f"⚠ R*Tree mismatch: {rtree_count} vs {stats.get('triplets', 0)} triplets")
+          
+          conn.close()
+          print("\n✓ Database validation PASSED")
+          PYEOF
       
       - name: Upload database artifacts
         uses: actions/upload-artifact@v4
@@ -329,15 +429,43 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Parse build log
-          MOLECULES_PROCESSED=$(jq -r '.molecules_processed' Database/build_log.json)
-          MOLECULES_FAILED=$(jq -r '.molecules_failed' Database/build_log.json)
-          TOTAL_TRIPLETS=$(jq -r '.total_triplets' Database/build_log.json)
-          TOTAL_VECTORS=$(jq -r '.total_vectors' Database/build_log.json)
+          MOLECULES_PROCESSED=$(jq -r '.statistics.molecules_processed' Database/build_log.json)
+          MOLECULES_FAILED=$(jq -r '.statistics.molecules_failed' Database/build_log.json)
+          FEATURES_STORED=$(jq -r '.statistics.features_stored' Database/build_log.json)
+          TRIPLETS_GENERATED=$(jq -r '.statistics.triplets_generated' Database/build_log.json)
+          VECTORS_STORED=$(jq -r '.statistics.vectors_stored' Database/build_log.json)
+          RTREE_ENTRIES=$(jq -r '.statistics.rtree_entries' Database/build_log.json)
           
+          # Exit vector stats
+          INCLUSION_SPHERES=$(jq -r '.statistics.inclusion_spheres' Database/build_log.json)
+          EXCLUSION_SPHERES=$(jq -r '.statistics.exclusion_spheres' Database/build_log.json)
+          EXIT_VECTORS=$(jq -r '.statistics.exit_vectors' Database/build_log.json)
+          
+          echo "### Core Statistics" >> $GITHUB_STEP_SUMMARY
           echo "- **Molecules processed**: $MOLECULES_PROCESSED" >> $GITHUB_STEP_SUMMARY
           echo "- **Molecules failed**: $MOLECULES_FAILED" >> $GITHUB_STEP_SUMMARY
-          echo "- **Total triplets**: $TOTAL_TRIPLETS" >> $GITHUB_STEP_SUMMARY
-          echo "- **Total vectors**: $TOTAL_VECTORS" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total features**: $FEATURES_STORED" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total triplets**: $TRIPLETS_GENERATED" >> $GITHUB_STEP_SUMMARY
+          echo "- **H-bond vectors**: $VECTORS_STORED" >> $GITHUB_STEP_SUMMARY
+          echo "- **R*Tree entries**: $RTREE_ENTRIES" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Exit Vectors (Schema v3)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Inclusion spheres**: $INCLUSION_SPHERES" >> $GITHUB_STEP_SUMMARY
+          echo "- **Exclusion spheres**: $EXCLUSION_SPHERES" >> $GITHUB_STEP_SUMMARY
+          echo "- **Exit vectors**: $EXIT_VECTORS" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$EXIT_VECTORS" != "null" ] && [ "$EXIT_VECTORS" -gt "0" ]; then
+            AVG_VECTORS=$(echo "scale=1; $EXIT_VECTORS / $MOLECULES_PROCESSED" | bc)
+            echo "- **Avg vectors/molecule**: $AVG_VECTORS" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Exit vectors successfully computed!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **WARNING: No exit vectors computed** (scipy may be missing)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Database size**: $(du -h Database/pharmacophores.db | cut -f1)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Database ready for download from artifacts!" >> $GITHUB_STEP_SUMMARY
