@@ -27,6 +27,14 @@ on:
         description: 'Ignore H-bond vector constraints (true/false)'
         required: false
         default: 'false'
+      use_exit_vectors:
+        description: 'Enable Stage 5: Exit vector scoring (true/false)'
+        required: false
+        default: 'false'
+      exit_vector_weight:
+        description: 'Weight for exit vector score in ranking (0.0-1.0)'
+        required: false
+        default: '0.5'
 
 jobs:
   search:
@@ -57,10 +65,11 @@ jobs:
       - name: Install dependencies
         shell: bash -el {0}
         run: |
-          conda install -y -c conda-forge numpy pandas python-dateutil
+          conda install -y -c conda-forge numpy pandas scipy python-dateutil
           python --version
           python -c "import numpy; print('NumPy version:', numpy.__version__)"
           python -c "import pandas; print('Pandas version:', pandas.__version__)"
+          python -c "import scipy; print('SciPy version:', scipy.__version__)"
       
       - name: Verify required files exist
         run: |
@@ -123,13 +132,17 @@ jobs:
                   version = cursor.execute("SELECT version FROM schema_version").fetchone()[0]
                   print(f"✓ Database schema version: {version}")
                   
-                  if version < 2:
-                      print("WARNING: Database is using old schema (v{version})".format(version=version))
-                      print("         R*Tree spatial indexing not available")
-                      print("         Consider rebuilding database for optimal performance")
+                  if version < 3:
+                      print(f"WARNING: Database schema v{version} detected")
+                      if version < 2:
+                          print("         R*Tree spatial indexing not available")
+                      if version < 3:
+                          print("         Exit vectors not available (Stage 5 disabled)")
+                      print("         Consider rebuilding database for all features")
               else:
                   print("WARNING: No schema_version table found (legacy database)")
-                  print("         Consider rebuilding database with Schema v2")
+                  print("         R*Tree and exit vectors not available")
+                  print("         Consider rebuilding database with Schema v3")
               
               # Check required tables
               cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -152,6 +165,15 @@ jobs:
                   print("✓ R*Tree spatial indexing enabled")
               else:
                   print("⚠ R*Tree not found (using legacy B-tree)")
+              
+              # Check for exit vectors (Schema v3)
+              cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='exit_vectors'")
+              has_exit_vectors = cursor.fetchone() is not None
+              
+              if has_exit_vectors:
+                  print("✓ Exit vectors table found (Stage 5 available)")
+              else:
+                  print("⚠ Exit vectors not found (Stage 5 disabled)")
               
               # Count entries
               for table in required_tables:
@@ -190,6 +212,8 @@ jobs:
           RMSD_THRESH="${{ github.event.inputs.rmsd_threshold }}"
           MAX_RESULTS="${{ github.event.inputs.max_results }}"
           IGNORE_VECTORS="${{ github.event.inputs.ignore_vectors }}"
+          USE_EXIT_VECTORS="${{ github.event.inputs.use_exit_vectors }}"
+          EXIT_VECTOR_WEIGHT="${{ github.event.inputs.exit_vector_weight }}"
           
           # Build command
           CMD="python search_pharmacophore_database.py"
@@ -203,6 +227,11 @@ jobs:
           
           if [ "$IGNORE_VECTORS" = "true" ]; then
             CMD="$CMD --ignore-vectors"
+          fi
+          
+          if [ "$USE_EXIT_VECTORS" = "true" ]; then
+            CMD="$CMD --use-exit-vectors"
+            CMD="$CMD --exit-vector-weight $EXIT_VECTOR_WEIGHT"
           fi
           
           CMD="$CMD --verbose"
@@ -250,6 +279,8 @@ jobs:
           RMSD threshold: ${{ github.event.inputs.rmsd_threshold }} Å
           Max results: ${{ github.event.inputs.max_results }}
           Ignore vectors: ${{ github.event.inputs.ignore_vectors }}
+          Use exit vectors: ${{ github.event.inputs.use_exit_vectors }}
+          Exit vector weight: ${{ github.event.inputs.exit_vector_weight }}
           
           RESULTS:
           --------
@@ -299,6 +330,8 @@ jobs:
           echo "- **Distance tolerance:** ${{ github.event.inputs.distance_tolerance }} Å" >> $GITHUB_STEP_SUMMARY
           echo "- **RMSD threshold:** ${{ github.event.inputs.rmsd_threshold }} Å" >> $GITHUB_STEP_SUMMARY
           echo "- **Max results:** ${{ github.event.inputs.max_results }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ignore vectors:** ${{ github.event.inputs.ignore_vectors }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Use exit vectors:** ${{ github.event.inputs.use_exit_vectors }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [ -f "SearchResults/search_results.csv" ]; then

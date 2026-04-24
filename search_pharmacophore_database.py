@@ -62,6 +62,8 @@ class QueryParser:
         self.query_path = query_path
         self.points = []
         self.num_points = 0
+        self.exit_vectors = []
+        self.has_exit_vectors = False
         
     def parse(self) -> bool:
         """Parse query JSON file and extract pharmacophore points"""
@@ -119,6 +121,46 @@ class QueryParser:
             if self.num_points < 3:
                 raise QueryParseError(f"Need at least 3 points for triplet matching, got {self.num_points}")
             
+            # Parse exit vectors (optional, for Stage 5)
+            if 'exit_vectors' in data:
+                raw_exit_vectors = data['exit_vectors']
+                for i, ev in enumerate(raw_exit_vectors):
+                    # Skip disabled exit vectors
+                    if not ev.get('enabled', True):
+                        logger.debug(f"Skipping disabled exit vector {i}")
+                        continue
+                    
+                    # Validate required fields
+                    if 'origin' not in ev or 'direction' not in ev:
+                        raise QueryParseError(f"Exit vector {i} missing 'origin' or 'direction'")
+                    
+                    origin = ev['origin']
+                    direction = ev['direction']
+                    
+                    # Parse coordinates
+                    origin_array = np.array([float(origin['x']), float(origin['y']), float(origin['z'])])
+                    direction_array = np.array([float(direction['x']), float(direction['y']), float(direction['z'])])
+                    
+                    # Normalize direction
+                    dir_norm = np.linalg.norm(direction_array)
+                    if dir_norm < 1e-6:
+                        raise QueryParseError(f"Exit vector {i} has zero-length direction")
+                    direction_normalized = direction_array / dir_norm
+                    
+                    parsed_ev = {
+                        'index': len(self.exit_vectors),
+                        'origin': origin_array,
+                        'direction': direction_normalized,
+                        'length': float(ev.get('length', 5.0)),
+                        'description': ev.get('description', '')
+                    }
+                    
+                    self.exit_vectors.append(parsed_ev)
+                
+                self.has_exit_vectors = len(self.exit_vectors) > 0
+                if self.has_exit_vectors:
+                    logger.info(f"Parsed {len(self.exit_vectors)} exit vectors for Stage 5 ranking")
+            
             logger.info(f"Parsed {self.num_points} query pharmacophore points")
             return True
             
@@ -130,6 +172,14 @@ class QueryParser:
     def get_points(self) -> List[Dict]:
         """Get parsed pharmacophore points"""
         return self.points
+    
+    def get_exit_vectors(self) -> List[Dict]:
+        """Get parsed exit vectors"""
+        return self.exit_vectors
+    
+    def has_exit_vector_constraints(self) -> bool:
+        """Check if query has exit vector constraints"""
+        return self.has_exit_vectors
 
 
 class TripletMatcher:
@@ -487,6 +537,98 @@ class CorrespondenceFinder:
         return True
 
 
+class ExitVectorMatcher:
+    """Match and score exit vectors between query and database
+    
+    Implements "Minimum Required" matching strategy:
+    - Query exit vectors are REQUIREMENTS (what we need)
+    - DB exit vectors are CAPABILITIES (what the molecule offers)
+    - Each query vector finds its best-matching DB vector
+    - Final score is average of all query vector matches
+    
+    Scoring formula: 80% angular similarity + 20% length similarity
+    """
+    
+    @staticmethod
+    def angular_similarity(dir1: np.ndarray, dir2: np.ndarray) -> float:
+        """Calculate angular similarity (1.0 = parallel, 0.0 = perpendicular, -1.0 = opposite)"""
+        cos_angle = np.dot(dir1, dir2)
+        cos_angle = np.clip(cos_angle, -1.0, 1.0)
+        angle_rad = np.arccos(cos_angle)
+        angle_deg = np.degrees(angle_rad)
+        
+        # Convert to similarity: 0° → 1.0, 90° → 0.0, 180° → -1.0
+        similarity = 1.0 - (angle_deg / 90.0)
+        return max(similarity, 0.0)  # Clamp negative values to 0
+    
+    @staticmethod
+    def length_similarity(len1: float, len2: float) -> float:
+        """Calculate length similarity using ratio (1.0 = same, 0.0 = very different)"""
+        ratio = min(len1, len2) / max(len1, len2)
+        return ratio
+    
+    @staticmethod
+    def match_single_vector(query_vec: Dict, db_vectors: List[Dict]) -> Tuple[float, Optional[Dict]]:
+        """Find best matching database vector for a query vector
+        
+        Returns: (best_score, best_db_vector)
+        """
+        if not db_vectors:
+            return 0.0, None
+        
+        best_score = 0.0
+        best_match = None
+        
+        for db_vec in db_vectors:
+            # Angular similarity (80% weight)
+            angular_sim = ExitVectorMatcher.angular_similarity(
+                query_vec['direction'],
+                db_vec['direction']
+            )
+            
+            # Length similarity (20% weight)  
+            length_sim = ExitVectorMatcher.length_similarity(
+                query_vec['length'],
+                db_vec['length']
+            )
+            
+            # Combined score
+            score = 0.8 * angular_sim + 0.2 * length_sim
+            
+            if score > best_score:
+                best_score = score
+                best_match = db_vec
+        
+        return best_score, best_match
+    
+    @staticmethod
+    def calculate_exit_vector_score(query_exit_vectors: List[Dict], 
+                                     db_exit_vectors: List[Dict]) -> float:
+        """Calculate overall exit vector match score
+        
+        Strategy: Each query requirement finds its best DB match
+        Final score = average of all query vector matches
+        
+        Returns: Score in [0.0, 1.0], where 1.0 is perfect match
+        """
+        if not query_exit_vectors:
+            return 1.0  # No requirements = perfect match
+        
+        if not db_exit_vectors:
+            return 0.0  # Requirements exist but no DB vectors = no match
+        
+        total_score = 0.0
+        
+        for query_vec in query_exit_vectors:
+            score, _ = ExitVectorMatcher.match_single_vector(query_vec, db_exit_vectors)
+            total_score += score
+        
+        # Average across all query vectors
+        average_score = total_score / len(query_exit_vectors)
+        
+        return average_score
+
+
 class RMSDCalculator:
     """Calculate RMSD using Kabsch algorithm"""
     
@@ -593,14 +735,55 @@ class PharmacophoreSearch:
                  distance_tolerance: float = 1.0,
                  rmsd_threshold: float = 2.0,
                  max_results: int = 20,
-                 check_vectors: bool = True):
+                 check_vectors: bool = True,
+                 use_exit_vectors: bool = False,
+                 exit_vector_weight: float = 0.5):
         self.query_path = query_path
         self.db_path = db_path
         self.distance_tolerance = distance_tolerance
         self.rmsd_threshold = rmsd_threshold
         self.max_results = max_results
         self.check_vectors = check_vectors
+        self.use_exit_vectors = use_exit_vectors
+        self.exit_vector_weight = exit_vector_weight
         self.results = []
+    
+    def _load_exit_vectors(self, mol_id: int, db_conn) -> List[Dict]:
+        """Load exit vectors for a molecule from database (Schema v3)
+        
+        Returns: List of exit vectors with origin, direction, length
+        """
+        cursor = db_conn.cursor()
+        
+        # Check if exit_vectors table exists (graceful degradation)
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='exit_vectors'"
+        )
+        if not cursor.fetchone():
+            logger.debug("No exit_vectors table in database (old schema)")
+            return []
+        
+        # Load exit vectors
+        rows = cursor.execute("""
+            SELECT origin_x, origin_y, origin_z,
+                   direction_x, direction_y, direction_z,
+                   length
+            FROM exit_vectors
+            WHERE mol_id = ?
+        """, (mol_id,)).fetchall()
+        
+        exit_vectors = []
+        for row in rows:
+            origin = np.array([row['origin_x'], row['origin_y'], row['origin_z']])
+            direction = np.array([row['direction_x'], row['direction_y'], row['direction_z']])
+            
+            exit_vectors.append({
+                'origin': origin,
+                'direction': direction,
+                'length': row['length']
+            })
+        
+        return exit_vectors
         
     def search(self) -> List[Dict]:
         """Execute complete search pipeline"""
@@ -622,6 +805,13 @@ class PharmacophoreSearch:
             return []
         
         query_points = parser.get_points()
+        query_exit_vectors = parser.get_exit_vectors()
+        has_exit_vectors = parser.has_exit_vector_constraints()
+        
+        # Determine if Stage 5 should run
+        use_stage5 = self.use_exit_vectors and has_exit_vectors
+        if use_stage5:
+            logger.info(f"Stage 5 enabled: {len(query_exit_vectors)} exit vector requirements")
         
         # Stage 2: Triplet matching
         logger.info("\nStage 2: Triplet matching...")
@@ -671,9 +861,62 @@ class PharmacophoreSearch:
                 
                 scored_results.append(result)
         
-        # Sort by RMSD (best first) and limit
+        # Sort by RMSD (best first) and limit to top candidates
         scored_results.sort(key=lambda x: x['rmsd'])
-        self.results = scored_results[:self.max_results]
+        
+        # Stage 5: Exit vector scoring (optional)
+        if use_stage5 and scored_results:
+            logger.info("\nStage 5: Exit vector scoring and re-ranking...")
+            
+            # Get top N results for re-ranking (top 20 by RMSD)
+            top_candidates = scored_results[:min(20, len(scored_results))]
+            
+            # Score each candidate
+            for result in top_candidates:
+                # Get mol_id from database
+                mol_row = matcher.conn.execute("""
+                    SELECT mol_id FROM molecules 
+                    WHERE pdb_id = ? AND ligand_name = ?
+                """, (result['pdb_id'], result['ligand_name'])).fetchone()
+                
+                if mol_row:
+                    mol_id = mol_row['mol_id']
+                    db_exit_vectors = self._load_exit_vectors(mol_id, matcher.conn)
+                    
+                    # Calculate exit vector score
+                    exit_score = ExitVectorMatcher.calculate_exit_vector_score(
+                        query_exit_vectors, db_exit_vectors
+                    )
+                    
+                    result['exit_vector_score'] = exit_score
+                    result['num_exit_vectors'] = len(db_exit_vectors)
+                    
+                    # Combined score for ranking (weighted)
+                    # Lower RMSD is better, higher exit_score is better
+                    # Normalize RMSD to [0, 1] range (0 = best)
+                    max_rmsd = max(r['rmsd'] for r in top_candidates)
+                    normalized_rmsd = 1.0 - (result['rmsd'] / max_rmsd) if max_rmsd > 0 else 1.0
+                    
+                    # Combined score
+                    result['combined_score'] = (
+                        (1.0 - self.exit_vector_weight) * normalized_rmsd +
+                        self.exit_vector_weight * exit_score
+                    )
+                else:
+                    result['exit_vector_score'] = 0.0
+                    result['num_exit_vectors'] = 0
+                    result['combined_score'] = 0.0
+            
+            # Re-rank by combined score (higher is better)
+            top_candidates.sort(key=lambda x: x['combined_score'], reverse=True)
+            
+            # Take top max_results
+            self.results = top_candidates[:self.max_results]
+            
+            logger.info(f"Re-ranked top {len(self.results)} results by exit vector compatibility")
+        else:
+            # No Stage 5: just use RMSD ranking
+            self.results = scored_results[:self.max_results]
         
         matcher.close()
         
@@ -721,6 +964,10 @@ class PharmacophoreSearch:
                 f.write(f"  RMSD: {result['rmsd']:.4f} Å\n")
                 f.write(f"  Matched features: {result['num_matched_features']}/{result['num_query_features']}\n")
                 f.write(f"  Match percentage: {result['match_percentage']:.1f}%\n")
+                if 'exit_vector_score' in result:
+                    f.write(f"  Exit vector score: {result['exit_vector_score']:.4f}\n")
+                    f.write(f"  Exit vectors in DB: {result['num_exit_vectors']}\n")
+                    f.write(f"  Combined score: {result['combined_score']:.4f}\n")
         
         logger.info(f"Detailed log saved to: {log_file}")
 
@@ -761,6 +1008,10 @@ Examples:
                        help='Maximum number of results (default: 20)')
     parser.add_argument('--ignore-vectors', action='store_true',
                        help='Ignore H-bond vector constraints')
+    parser.add_argument('--use-exit-vectors', action='store_true',
+                       help='Enable Stage 5: Exit vector scoring and re-ranking')
+    parser.add_argument('--exit-vector-weight', type=float, default=0.5,
+                       help='Weight for exit vector score in combined ranking (0.0-1.0, default: 0.5)')
     parser.add_argument('--verbose', action='store_true',
                        help='Verbose logging')
     
@@ -797,7 +1048,9 @@ Examples:
             distance_tolerance=args.distance_tolerance,
             rmsd_threshold=args.rmsd_threshold,
             max_results=args.max_results,
-            check_vectors=not args.ignore_vectors
+            check_vectors=not args.ignore_vectors,
+            use_exit_vectors=args.use_exit_vectors,
+            exit_vector_weight=args.exit_vector_weight
         )
         
         results = search.search()
