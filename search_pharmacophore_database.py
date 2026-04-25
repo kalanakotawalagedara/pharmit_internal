@@ -540,13 +540,15 @@ class CorrespondenceFinder:
 class ExitVectorMatcher:
     """Match and score exit vectors between query and database
     
+    Supports TWO modes:
+    1. Directional mode: Query has 'direction' field (angular + length similarity)
+    2. Sphere mode: Query has 'radius' field (proximity + length adequacy, direction-agnostic)
+    
     Implements "Minimum Required" matching strategy:
     - Query exit vectors are REQUIREMENTS (what we need)
     - DB exit vectors are CAPABILITIES (what the molecule offers)
     - Each query vector finds its best-matching DB vector
     - Final score is average of all query vector matches
-    
-    Scoring formula: 80% angular similarity + 20% length similarity
     """
     
     @staticmethod
@@ -571,29 +573,111 @@ class ExitVectorMatcher:
     def match_single_vector(query_vec: Dict, db_vectors: List[Dict]) -> Tuple[float, Optional[Dict]]:
         """Find best matching database vector for a query vector
         
+        Auto-detects mode based on query structure:
+        - If query has 'direction' → directional matching (angular + length)
+        - If query has 'radius' → sphere-based matching (proximity + length)
+        
         Returns: (best_score, best_db_vector)
         """
         if not db_vectors:
             return 0.0, None
         
+        # Detect mode based on query structure
+        if 'direction' in query_vec:
+            # DIRECTIONAL MODE (original implementation)
+            return ExitVectorMatcher._match_directional(query_vec, db_vectors)
+        elif 'radius' in query_vec:
+            # SPHERE MODE (new - direction-agnostic)
+            return ExitVectorMatcher._match_sphere(query_vec, db_vectors)
+        else:
+            # Fallback: assume sphere mode with default radius
+            return ExitVectorMatcher._match_sphere(query_vec, db_vectors)
+    
+    @staticmethod
+    def _match_directional(query_vec: Dict, db_vectors: List[Dict]) -> Tuple[float, Optional[Dict]]:
+        """Directional mode: Match based on angular + length similarity
+        
+        Used when query specifies a specific direction vector.
+        Scoring: 80% angular similarity + 20% length similarity
+        """
         best_score = 0.0
         best_match = None
+        
+        query_direction = np.array([query_vec['direction']['x'],
+                                     query_vec['direction']['y'],
+                                     query_vec['direction']['z']])
+        query_length = query_vec.get('length', 5.0)
         
         for db_vec in db_vectors:
             # Angular similarity (80% weight)
             angular_sim = ExitVectorMatcher.angular_similarity(
-                query_vec['direction'],
+                query_direction,
                 db_vec['direction']
             )
             
-            # Length similarity (20% weight)  
+            # Length similarity (20% weight)
             length_sim = ExitVectorMatcher.length_similarity(
-                query_vec['length'],
+                query_length,
                 db_vec['length']
             )
             
             # Combined score
             score = 0.8 * angular_sim + 0.2 * length_sim
+            
+            if score > best_score:
+                best_score = score
+                best_match = db_vec
+        
+        return best_score, best_match
+    
+    @staticmethod
+    def _match_sphere(query_vec: Dict, db_vectors: List[Dict]) -> Tuple[float, Optional[Dict]]:
+        """Sphere mode: Match based on proximity to origin + length adequacy
+        
+        Used when query specifies a tolerance sphere (direction-agnostic).
+        Query defines:
+        - origin: center of tolerance sphere
+        - radius: how far from center we tolerate DB vector origins (default 1.0 Å)
+        - min_length: minimum clearance required (default 5.0 Å)
+        
+        Scoring: 60% proximity to center + 40% length adequacy
+        No angular component - any direction from the sphere is acceptable
+        """
+        best_score = 0.0
+        best_match = None
+        
+        # Parse query parameters
+        query_origin = np.array([query_vec['origin']['x'],
+                                  query_vec['origin']['y'],
+                                  query_vec['origin']['z']])
+        query_radius = query_vec.get('radius', 1.0)
+        query_min_length = query_vec.get('min_length', query_vec.get('length', 5.0))
+        
+        for db_vec in db_vectors:
+            db_origin = db_vec['origin']
+            db_length = db_vec['length']
+            
+            # Calculate distance from query origin to DB origin
+            distance = np.linalg.norm(query_origin - db_origin)
+            
+            # Only consider DB vectors originating within tolerance sphere
+            if distance > query_radius:
+                continue
+            
+            # Proximity score: closer to sphere center = better
+            # distance = 0 → proximity = 1.0
+            # distance = radius → proximity = 0.0
+            proximity_score = 1.0 - (distance / query_radius)
+            proximity_score = max(0.0, min(1.0, proximity_score))
+            
+            # Length adequacy: does DB provide enough clearance?
+            # db_length ≥ query_min_length → adequacy = 1.0
+            # db_length < query_min_length → proportional penalty
+            length_ratio = db_length / query_min_length
+            length_adequacy = min(1.0, length_ratio)
+            
+            # Combined score: 60% proximity + 40% length
+            score = 0.6 * proximity_score + 0.4 * length_adequacy
             
             if score > best_score:
                 best_score = score
@@ -609,6 +693,8 @@ class ExitVectorMatcher:
         Strategy: Each query requirement finds its best DB match
         Final score = average of all query vector matches
         
+        Automatically handles both directional and sphere modes
+        
         Returns: Score in [0.0, 1.0], where 1.0 is perfect match
         """
         if not query_exit_vectors:
@@ -620,6 +706,7 @@ class ExitVectorMatcher:
         total_score = 0.0
         
         for query_vec in query_exit_vectors:
+            # match_single_vector automatically routes to correct mode
             score, _ = ExitVectorMatcher.match_single_vector(query_vec, db_exit_vectors)
             total_score += score
         
