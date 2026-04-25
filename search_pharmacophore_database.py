@@ -130,30 +130,44 @@ class QueryParser:
                         logger.debug(f"Skipping disabled exit vector {i}")
                         continue
                     
-                    # Validate required fields
-                    if 'origin' not in ev or 'direction' not in ev:
-                        raise QueryParseError(f"Exit vector {i} missing 'origin' or 'direction'")
+                    # Validate required fields - origin is always required
+                    if 'origin' not in ev:
+                        raise QueryParseError(f"Exit vector {i} missing 'origin'")
                     
                     origin = ev['origin']
-                    direction = ev['direction']
-                    
-                    # Parse coordinates
                     origin_array = np.array([float(origin['x']), float(origin['y']), float(origin['z'])])
-                    direction_array = np.array([float(direction['x']), float(direction['y']), float(direction['z'])])
-                    
-                    # Normalize direction
-                    dir_norm = np.linalg.norm(direction_array)
-                    if dir_norm < 1e-6:
-                        raise QueryParseError(f"Exit vector {i} has zero-length direction")
-                    direction_normalized = direction_array / dir_norm
                     
                     parsed_ev = {
                         'index': len(self.exit_vectors),
                         'origin': origin_array,
-                        'direction': direction_normalized,
-                        'length': float(ev.get('length', 5.0)),
                         'description': ev.get('description', '')
                     }
+                    
+                    # Detect mode: sphere (has 'radius') or directional (has 'direction')
+                    if 'radius' in ev:
+                        # SPHERE MODE (primary - direction-agnostic)
+                        parsed_ev['radius'] = float(ev.get('radius', 1.0))
+                        parsed_ev['min_length'] = float(ev.get('min_length', ev.get('length', 5.0)))
+                        
+                    elif 'direction' in ev:
+                        # DIRECTIONAL MODE (legacy support)
+                        direction = ev['direction']
+                        direction_array = np.array([float(direction['x']), float(direction['y']), float(direction['z'])])
+                        
+                        # Normalize direction
+                        dir_norm = np.linalg.norm(direction_array)
+                        if dir_norm < 1e-6:
+                            raise QueryParseError(f"Exit vector {i} has zero-length direction")
+                        direction_normalized = direction_array / dir_norm
+                        
+                        parsed_ev['direction'] = direction_normalized
+                        parsed_ev['length'] = float(ev.get('length', 5.0))
+                        
+                    else:
+                        # Default to sphere mode if neither specified
+                        logger.warning(f"Exit vector {i} missing 'radius' or 'direction', defaulting to sphere mode (radius=1.0)")
+                        parsed_ev['radius'] = 1.0
+                        parsed_ev['min_length'] = float(ev.get('length', 5.0))
                     
                     self.exit_vectors.append(parsed_ev)
                 
@@ -603,9 +617,8 @@ class ExitVectorMatcher:
         best_score = 0.0
         best_match = None
         
-        query_direction = np.array([query_vec['direction']['x'],
-                                     query_vec['direction']['y'],
-                                     query_vec['direction']['z']])
+        # query_vec['direction'] is already a numpy array from parser
+        query_direction = query_vec['direction']
         query_length = query_vec.get('length', 5.0)
         
         for db_vec in db_vectors:
@@ -646,10 +659,8 @@ class ExitVectorMatcher:
         best_score = 0.0
         best_match = None
         
-        # Parse query parameters
-        query_origin = np.array([query_vec['origin']['x'],
-                                  query_vec['origin']['y'],
-                                  query_vec['origin']['z']])
+        # Parse query parameters - query_vec['origin'] is already a numpy array from parser
+        query_origin = query_vec['origin']
         query_radius = query_vec.get('radius', 1.0)
         query_min_length = query_vec.get('min_length', query_vec.get('length', 5.0))
         
