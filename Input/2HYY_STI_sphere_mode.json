@@ -30,7 +30,7 @@
             "svector": {
                 "x": -0.17001205975432954,
                 "y": 0.08662547116579847,
-                "z": -0.9820626068668243
+                "z": 0.981627183447664
             },
             "minsize": "",
             "maxsize": "",
@@ -49,6 +49,42 @@
                 "x": -0.4166745553523912,
                 "y": -0.302731784801236,
                 "z": -0.8571673007021122
+            },
+            "minsize": "",
+            "maxsize": "",
+            "selected": false
+        },
+        {
+            "name": "HydrogenAcceptor",
+            "hasvec": true,
+            "x": 13.399,
+            "y": 15.803,
+            "z": 16.931,
+            "radius": 1,
+            "enabled": true,
+            "vector_on": 1,
+            "svector": {
+                "x": 0.3581496414732153,
+                "y": 0.9330117145258786,
+                "z": -0.03489949670250073
+            },
+            "minsize": "",
+            "maxsize": "",
+            "selected": false
+        },
+        {
+            "name": "Hydrophobic",
+            "hasvec": false,
+            "x": 21.457,
+            "y": 11.369,
+            "z": 13.879,
+            "radius": 1,
+            "enabled": true,
+            "vector_on": 0,
+            "svector": {
+                "x": 1,
+                "y": 0,
+                "z": 0
             },
             "minsize": "",
             "maxsize": "",
